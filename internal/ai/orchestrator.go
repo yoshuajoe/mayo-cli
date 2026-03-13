@@ -147,7 +147,7 @@ func (o *Orchestrator) ProcessQuery(ctx context.Context, userInput string) (stri
 		if usage != nil {
 			ui.RenderUsage(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
 		}
-		return "", nil
+		return aiResponse, nil
 	}
 
 	// 3. Render AI Response (Thought -> Conversation -> SQL)
@@ -243,14 +243,17 @@ func (o *Orchestrator) ProcessQuery(ctx context.Context, userInput string) (stri
 	}
 
 	// 6. --- NEW: ANALYST STAGE ---
-	// Feed the data back to AI for analysis if results were found
+	finalResponse := aiResponse
+	var analysis string
 	if len(o.Connections) > 0 {
 		ui.RenderStep("🧠", "Analyzing data results for insights...")
-		analysis, err := o.AnalyzeResults(ctx, userInput, sqlQuery, aiResponse)
+		var err error
+		analysis, err = o.AnalyzeResults(ctx, userInput, sqlQuery, aiResponse)
 		if err == nil && analysis != "" {
 			ui.RenderSeparator()
 			ui.PrintInfo("Analyst Insight:")
 			ui.RenderMarkdown(analysis)
+			finalResponse += "\n\n### Analyst Insight\n" + analysis
 		}
 	}
 
@@ -266,13 +269,17 @@ func (o *Orchestrator) ProcessQuery(ctx context.Context, userInput string) (stri
 			resultSummary = fmt.Sprintf(" Result: %s", s)
 		}
 		session.LogToSession(o.Session.ID, fmt.Sprintf("Mayo SQL: %s%s", sqlQuery, resultSummary))
+		if analysis != "" {
+			session.LogToSession(o.Session.ID, fmt.Sprintf("Analyst Insight: %s", analysis))
+		}
 		o.ensureSessionSummary(ctx, userInput)
 	}
 
 	if usage != nil {
 		ui.RenderUsage(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
 	}
-	return "", nil
+	
+	return finalResponse, nil
 }
 
 func (o *Orchestrator) AnalyzeResults(ctx context.Context, originalQuery, sql, aiPrompt string) (string, error) {
@@ -505,4 +512,40 @@ func validateReadOnly(query string) error {
 		}
 	}
 	return nil
+}
+
+func (o *Orchestrator) GenerateReport(ctx context.Context) (string, error) {
+	if o.Session == nil {
+		return "", fmt.Errorf("no active session")
+	}
+	logs, err := session.ReadSessionLogs(o.Session.ID)
+	if err != nil || logs == "" {
+		return "", fmt.Errorf("no research logs found for this session")
+	}
+
+	ui.RenderStep("📝", "Synthesizing session logs into a comprehensive report...")
+
+	prompt := fmt.Sprintf(`You are Mayo's Senior Report Generator. 
+Based on the following research session logs, generate a comprehensive executive summary report.
+The report should include:
+1. Executive Summary: What was searched for and what was found.
+2. Key Insights: Bulleted list of the most important takeaways.
+3. Data Evidence: Mention specific SQL queries or results that back up the insights.
+4. Recommendations: Next steps based on the data.
+
+FORMAT: Use professional Markdown. Be concise but impactful.
+
+SESSION LOGS:
+%s`, logs)
+
+	report, _, err := o.AI.GenerateResponse(ctx, "You are a senior professional researcher and report writer. Generate a high-quality summary report.", prompt)
+	if err != nil {
+		return "", err
+	}
+
+	// Clean up thought blocks
+	report = regexp.MustCompile("(?is)<think>.*?</think>").ReplaceAllString(report, "")
+	report = regexp.MustCompile("(?is)<thought>.*?</thought>").ReplaceAllString(report, "")
+
+	return strings.TrimSpace(report), nil
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -140,6 +141,8 @@ func StartInteractiveShell() {
 			readline.PcItem("export"),
 			readline.PcItem("delete"),
 		),
+		readline.PcItem("/share"),
+		readline.PcItem("/this"),
 		readline.PcItem("/help"),
 		readline.PcItem("/exit"),
 		readline.PcItem("/quit"),
@@ -223,8 +226,6 @@ func StartInteractiveShell() {
 		}
 
 		ui.RenderSeparator()
-		fmt.Println(resp)
-		ui.RenderSeparator()
 		lastResponse = resp
 	}
 }
@@ -285,19 +286,71 @@ func HandleSlashCommand(input string) {
 			ui.PrintInfo("Usage: /export [filename.md]")
 			return
 		}
-		if lastResponse == "" {
-			ui.PrintError("No output to export.")
+		if GlobalSess == nil {
+			ui.PrintError("No active research session to export.")
 			return
 		}
 		fname := parts[1]
 		if !strings.HasSuffix(fname, ".md") {
 			fname += ".md"
 		}
-		err := os.WriteFile(fname, []byte(lastResponse), 0644)
+
+		fullLog, err := session.ReadSessionLogs(GlobalSess.ID)
+		if err != nil || fullLog == "" {
+			// Fallback to last response if no logs found
+			if lastResponse == "" {
+				ui.PrintError("No research results found to export.")
+				return
+			}
+			fullLog = lastResponse
+		}
+
+		err = os.WriteFile(fname, []byte("# Mayo Research Export: "+GlobalSess.Summary+"\n*Session ID: "+GlobalSess.ID+"*\n\n"+fullLog), 0644)
 		if err != nil {
 			ui.PrintError(err.Error())
 		} else {
-			ui.PrintSuccess("Exported.")
+			ui.PrintSuccess(fmt.Sprintf("Export complete! Research history saved to %s", fname))
+		}
+	case "/share":
+		if GlobalOrchestrator == nil || GlobalSess == nil {
+			ui.PrintError("AI Client or Session not initialized. Run /setup first.")
+			return
+		}
+
+		report, err := GlobalOrchestrator.GenerateReport(context.Background())
+		if err != nil {
+			ui.PrintError(err.Error())
+			return
+		}
+
+		ui.RenderSeparator()
+		ui.PrintInfo("✨ GENERATED RESEARCH REPORT ✨")
+		ui.RenderMarkdown(report)
+		ui.RenderSeparator()
+
+		// Offer to save it
+		var save bool
+		survey.AskOne(&survey.Confirm{
+			Message: "Do you want to save this report to a file?",
+			Default: true,
+		}, &save)
+
+		if save {
+			cleanSummary := strings.ReplaceAll(GlobalSess.Summary, " ", "_")
+			cleanSummary = regexp.MustCompile(`[^a-zA-Z0-9_]`).ReplaceAllString(cleanSummary, "")
+			fname := fmt.Sprintf("report_%s.md", cleanSummary)
+			if len(parts) > 1 {
+				fname = parts[1]
+				if !strings.HasSuffix(fname, ".md") {
+					fname += ".md"
+				}
+			}
+			err := os.WriteFile(fname, []byte(report), 0644)
+			if err != nil {
+				ui.PrintError(err.Error())
+			} else {
+				ui.PrintSuccess(fmt.Sprintf("Report saved and ready to share: %s", fname))
+			}
 		}
 	case "/this":
 		cfg, _ := config.LoadConfig()
@@ -999,8 +1052,11 @@ Mayo is your autonomous partner for deep data research and analysis. It combines
   - **Sample**: ` + "`/sessions rename`" + ` (allows naming your current research for later retrieval).
 
 - **/export [filename.md]**
-  Saves the current research state, AI answers, and SQL queries to a clean Markdown file.
-  - **Sample**: ` + "`/export research_summary.md`" + `
+  Saves the raw session history (all queries and answers) to a Markdown file.
+
+- **/share [filename.md]**
+  Uses AI to synthesize your entire session into a professional Executive Report.
+  - **Sample**: ` + "`/share findings.md`" + `
 
 ### 🛸 Inspection & Debugging
 - **/this**
