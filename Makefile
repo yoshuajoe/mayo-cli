@@ -1,0 +1,75 @@
+# Mayo Makefile
+
+# Variables
+BINARY_NAME=mayo
+GO=go
+BUILD_DIR=bin
+
+.PHONY: all build run clean test setup install
+
+all: build
+
+# Build the binary
+build:
+	@echo "🔨 Building Mayo..."
+	@mkdir -p $(BUILD_DIR)
+	@$(GO) build -o $(BUILD_DIR)/$(BINARY_NAME) main.go
+	@echo "✅ Build complete: $(BUILD_DIR)/$(BINARY_NAME)"
+
+# Run the application
+run:
+	@$(GO) run main.go
+
+# Run tests
+test:
+	@echo "🔍 Running tests..."
+	@$(GO) test ./... -v
+
+# Clean build artifacts
+clean:
+	@echo "🧹 Cleaning up..."
+	@rm -rf $(BUILD_DIR)
+	@echo "✨ Cleaned!"
+
+# Install dependencies
+setup:
+	@echo "📦 Tidying up modules..."
+	@$(GO) mod tidy
+	@echo "✅ Setup complete."
+
+# Installation Variables
+INSTALL_PATH=/usr/local/bin
+CONFIG_DIR=$(HOME)/.mayo-cli
+
+# Install the binary globally
+install: build
+	@echo "🚀 Installing $(BINARY_NAME) to $(shell go env GOPATH)/bin..."
+	@mkdir -p $(shell go env GOPATH)/bin
+	@cp $(BUILD_DIR)/$(BINARY_NAME) $(shell go env GOPATH)/bin/$(BINARY_NAME)
+	@echo "📂 Creating configuration directories..."
+	@mkdir -p $(CONFIG_DIR)/sessions
+	@mkdir -p $(CONFIG_DIR)/data
+	@echo "✅ Installation complete!"
+	@echo "💡 Make sure $(shell go env GOPATH)/bin is in your PATH."
+
+# Uninstall the binary
+uninstall:
+	@echo "🗑️  Uninstalling $(BINARY_NAME)..."
+	@rm -f $(shell go env GOPATH)/bin/$(BINARY_NAME)
+	@echo "✅ Uninstalled."
+
+# Run cross-platform setup script
+setup-all:
+	@$(GO) run scripts/setup.go
+
+# Help command
+help:
+	@echo "Mayo Tasks:"
+	@echo "  make build      - Build the binary"
+	@echo "  make run        - Run the application using go run"
+	@echo "  make test       - Run all unit tests"
+	@echo "  make setup      - Tidy modules and install dependencies"
+	@echo "  make setup-all  - Run cross-platform installer (Win/Mac/Linux)"
+	@echo "  make clean      - Remove build artifacts"
+	@echo "  make install    - Install binary to GOPATH/bin"
+	@echo "  make uninstall  - Remove binary from GOPATH/bin"
