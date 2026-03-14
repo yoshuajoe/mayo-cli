@@ -18,11 +18,12 @@ import (
 )
 
 type Session struct {
-	ID        string    `json:"id"`
-	Summary   string    `json:"summary"`
-	VaultKey  string    `json:"vault_key"` // Base64-encoded AES-256 key
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID                string    `json:"id"`
+	Summary           string    `json:"summary"`
+	VaultKey          string    `json:"vault_key"` // Base64-encoded AES-256 key
+	ConnectedProfiles []string  `json:"connected_profiles"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 func NewSession() (*Session, error) {
@@ -162,7 +163,7 @@ func ReadSessionLogs(sessionID string) (string, error) {
 
 	var fullLog strings.Builder
 	for _, entry := range entries {
-		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".md" {
+		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".md" && !strings.HasPrefix(entry.Name(), "metadata_") {
 			content, err := os.ReadFile(filepath.Join(sessionDir, entry.Name()))
 			if err == nil {
 				fullLog.Write(content)

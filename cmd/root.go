@@ -12,13 +12,16 @@ import (
 	"time"
 
 	"mayo-cli/internal/ai"
+	"mayo-cli/internal/changelog"
 	"mayo-cli/internal/config"
 	"mayo-cli/internal/dataframe"
 	"mayo-cli/internal/db"
+	"mayo-cli/internal/git"
 	"mayo-cli/internal/knowledge"
 	"mayo-cli/internal/privacy"
 	"mayo-cli/internal/session"
 	"mayo-cli/internal/ui"
+	"mayo-cli/pkg/version"
 
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/chzyer/readline"
@@ -40,12 +43,59 @@ var rootCmd = &cobra.Command{
 	},
 }
 
+var releaseNotesCmd = &cobra.Command{
+	Use:   "release-notes [version]",
+	Short: "Generate AI-powered changelog from git commits",
+	Args:  cobra.MaximumNArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		ver := "HEAD"
+		if len(args) > 0 {
+			ver = args[0]
+		}
+
+		cfg, err := config.LoadConfig()
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		InitAIClient(cfg)
+		if GlobalAI == nil {
+			fmt.Println("AI not configured. Run /setup first.")
+			os.Exit(1)
+		}
+
+		fmt.Println("Fetching git commits...")
+		commits, err := git.GetCommitsSinceLastTag()
+		if err != nil {
+			fmt.Printf("Git error: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Println("Generating AI changelog...")
+		md, err := ai.GenerateChangelogFromCommits(context.Background(), GlobalAI, commits, ver)
+		if err != nil {
+			fmt.Printf("AI error: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Println("\n--- GENERATED CHANGELOG ---")
+		fmt.Println(md)
+		fmt.Println("---------------------------")
+		
+		// Optionally save it if in a specific workflow (we'll let the user pipe it or handle in script)
+	},
+}
+
+func init() {
+	rootCmd.AddCommand(releaseNotesCmd)
+}
+
 func StartInteractiveShell() {
 	cfg, _ := config.LoadConfig()
 	if cfg != nil {
 		privacy.PrivacyMode = cfg.PrivacyMode
 	}
-	ui.PrintBanner("v1.2.0")
+	ui.PrintBanner(version.Version)
 
 	// 1. Session selection first
 	list, _ := session.ListSessions()
@@ -72,8 +122,11 @@ func StartInteractiveShell() {
 		}
 	}
 
+	// Track if this is a fresh session
+	isNewSession := false
 	if GlobalSess == nil {
 		GlobalSess, _ = session.NewSession()
+		isNewSession = true
 		ui.RenderStep("✨", "Starting a fresh research session...")
 	}
 
@@ -82,13 +135,24 @@ func StartInteractiveShell() {
 	} else {
 		InitAIClient(cfg)
 
-		// Auto-connect to active DS profile
-		if cfg.ActiveDSProfile != "" && GlobalAI != nil {
-			for _, d := range cfg.DSProfiles {
-				if d.Name == cfg.ActiveDSProfile {
-					ui.RenderStep("🔌", fmt.Sprintf("Auto-connecting to saved source: %s [%s]", d.Name, d.Driver))
-					HandleConnect(d.Driver, d.DSN, "", d.Name)
-					break
+		// Auto-connect for resumed sessions only
+		var targets []string
+		if !isNewSession {
+			if len(GlobalSess.ConnectedProfiles) > 0 {
+				targets = GlobalSess.ConnectedProfiles
+			} else if cfg.ActiveDSProfile != "" {
+				targets = []string{cfg.ActiveDSProfile}
+			}
+		}
+
+		if len(targets) > 0 && GlobalAI != nil {
+			for _, targetDS := range targets {
+				for _, d := range cfg.DSProfiles {
+					if d.Name == targetDS {
+						ui.RenderStep("🔌", fmt.Sprintf("Auto-connecting to saved source: %s [%s]", d.Name, d.Driver))
+						HandleConnect(d.Driver, d.DSN, "", d.Name)
+						break
+					}
 				}
 			}
 		}
@@ -131,6 +195,7 @@ func StartInteractiveShell() {
 		readline.PcItem("/knowledge"),
 		readline.PcItem("/privacy"),
 		readline.PcItem("/debug"),
+		readline.PcItem("/describe"),
 		readline.PcItem("/df",
 			readline.PcItem("save"),
 			readline.PcItem("commit"),
@@ -143,6 +208,9 @@ func StartInteractiveShell() {
 		),
 		readline.PcItem("/share"),
 		readline.PcItem("/this"),
+		readline.PcItem("/scan"),
+		readline.PcItem("/reconcile"),
+		readline.PcItem("/changelog"),
 		readline.PcItem("/help"),
 		readline.PcItem("/exit"),
 		readline.PcItem("/quit"),
@@ -483,6 +551,17 @@ func HandleSlashCommand(input string) {
 
 		ui.RenderMarkdown(sb.String())
 
+	case "/scan":
+		if GlobalOrchestrator == nil {
+			ui.PrintError("Not initialized.")
+			return
+		}
+		ui.PrintInfo("Starting schema scan and metadata enrichment...")
+		if err := GlobalOrchestrator.SyncSchema(context.Background()); err != nil {
+			ui.PrintError(err.Error())
+		} else {
+			ui.PrintSuccess("Scan complete.")
+		}
 	case "/sources":
 		if GlobalOrchestrator == nil || len(GlobalOrchestrator.Connections) == 0 {
 			ui.PrintInfo("No sources.")
@@ -709,6 +788,21 @@ func HandleSlashCommand(input string) {
 		if driver != "" && dsn != "" {
 			HandleConnect(driver, dsn, alias, "")
 		}
+	case "/reconcile":
+		if GlobalOrchestrator == nil {
+			ui.PrintError("Not connected.")
+			return
+		}
+		if len(parts) < 3 {
+			ui.PrintInfo("Usage: /reconcile <alias1> <alias2>")
+			return
+		}
+		resp, err := GlobalOrchestrator.Reconcile(context.Background(), parts[1], parts[2])
+		if err != nil {
+			ui.PrintError(err.Error())
+		} else {
+			ui.RenderMarkdown(resp)
+		}
 	case "/disconnect":
 		if GlobalOrchestrator == nil || len(GlobalOrchestrator.Connections) == 0 {
 			ui.PrintInfo("No active connections to disconnect.")
@@ -784,6 +878,19 @@ func HandleSlashCommand(input string) {
 		if GlobalOrchestrator != nil {
 			GlobalOrchestrator.UserContext = cfg.UserContext
 		}
+	case "/changelog":
+		logs, err := changelog.GetChangelogs()
+		if err != nil {
+			ui.PrintInfo("No changelogs found. Check internal/changelog/data.")
+			return
+		}
+
+		ui.PrintInfo("--- CHANGELOGS ---")
+		for _, content := range logs {
+			ui.RenderMarkdown(content)
+			ui.RenderSeparator()
+		}
+
 	case "/debug":
 		ui.DebugEnabled = !ui.DebugEnabled
 		status := "DISABLED"
@@ -972,6 +1079,43 @@ func HandleSlashCommand(input string) {
 				ui.PrintSuccess("Renamed.")
 			}
 		}
+	case "/describe":
+		if GlobalOrchestrator == nil {
+			ui.PrintError("Not connected.")
+			return
+		}
+		target := ""
+		if len(parts) > 1 {
+			target = parts[1]
+		} else {
+			// Prompt for target if not specified
+			options := []string{"df (Active Dataframe)"}
+			for k := range GlobalOrchestrator.Connections {
+				options = append(options, k)
+			}
+			if len(options) == 1 && options[0] == "df (Active Dataframe)" && GlobalOrchestrator.StagedName == "" && len(GlobalOrchestrator.LastRows) == 0 {
+				ui.PrintInfo("No active dataframe or connections to describe.")
+				return
+			}
+			
+			err := survey.AskOne(&survey.Select{
+				Message: "Select target to describe:",
+				Options: options,
+			}, &target)
+			if err != nil {
+				return
+			}
+			if strings.HasPrefix(target, "df") {
+				target = "df"
+			}
+		}
+
+		resp, err := GlobalOrchestrator.Describe(context.Background(), target)
+		if err != nil {
+			ui.PrintError(err.Error())
+		} else {
+			ui.RenderMarkdown(resp)
+		}
 	case "/privacy":
 		cfg, _ := config.LoadConfig()
 		privacy.PrivacyMode = !privacy.PrivacyMode
@@ -1007,6 +1151,9 @@ Mayo is your autonomous partner for deep data research and analysis. It combines
 
 - **/sources**
   Displays verbose info about all active connections, their drivers, and aliases.
+
+- **/describe [alias|df]**
+  Generates a statistical summary (Pandas-style) for a dataframe or a data source.
 
 - **/disconnect [alias]**
   Unwires and closes a specific data source connection.
@@ -1072,7 +1219,7 @@ Mayo is your autonomous partner for deep data research and analysis. It combines
 2. **Read-Only Safety**: Every SQL query is validated against a blacklist of WRITE operations (` + "`INSERT`" + `, ` + "`UPDATE`" + `, ` + "`DELETE`" + `, etc.).
 3. **Thought Blocks**: Look at the ` + "`thought`" + ` blocks to understand *how* the AI interpreted your data schema.
 
-*Developed by Popolo Research Labs.*
+*Mayo by Teleskop.id*
 *Status: READY | READ-ONLY: ON*
 ---`
 		ui.RenderMarkdown(helpManual)

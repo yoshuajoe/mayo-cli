@@ -10,17 +10,21 @@ import (
 	"sort"
 	"strings"
 
+	"mayo-cli/internal/config"
 	"mayo-cli/internal/db"
 	"mayo-cli/internal/dataframe"
+	_ "github.com/mattn/go-sqlite3"
 	"mayo-cli/internal/files"
 	"mayo-cli/internal/privacy"
 	"mayo-cli/internal/session"
 	"mayo-cli/internal/ui"
+	"os"
 )
 
 type DBConnection struct {
 	Alias    string
 	Source   string // Descriptive name (profile name, file path, etc)
+	DSN      string // Actual connection string / path
 	DB       *sql.DB
 	Driver   string
 	Schema   *db.Schema
@@ -61,19 +65,38 @@ func (o *Orchestrator) ProcessQuery(ctx context.Context, userInput string) (stri
 		ui.RenderStep("🗺️", fmt.Sprintf("Building system prompt from %d database connections...", len(o.Connections)))
 
 		var fullSchema db.Schema
-		for _, conn := range o.Connections {
+		for alias, conn := range o.Connections {
+			// Try to load metadata if not present
+			if conn.Schema == nil {
+				o.LoadMetadata(alias)
+			}
 			if conn.Schema != nil {
 				// We inform AI about the alias. AI should use alias.table if needed,
 				// or we'll handle routing. For now, we give prefixed table names for clarity.
 				for _, tbl := range conn.Schema.Tables {
 					clonedTbl := tbl
-					clonedTbl.Name = fmt.Sprintf("%s.%s", conn.Alias, tbl.Name)
+					if tbl.SchemaName != "" {
+						clonedTbl.Name = fmt.Sprintf("%s.%s.%s", conn.Alias, tbl.SchemaName, tbl.Name)
+					} else {
+						clonedTbl.Name = fmt.Sprintf("%s.%s", conn.Alias, tbl.Name)
+					}
 					fullSchema.Tables = append(fullSchema.Tables, clonedTbl)
 				}
 			}
 		}
 
-		systemPrompt = BuildSystemPrompt(&fullSchema, history, o.UserContext)
+		dialect := "ansi"
+		if o.StagedName != "" {
+			dialect = "sqlite"
+		} else if len(o.Connections) > 0 {
+			// Typical use case: all connections usually share a target driver or we pick the first
+			for _, conn := range o.Connections {
+				dialect = conn.Driver
+				break
+			}
+		}
+
+		systemPrompt = BuildSystemPrompt(&fullSchema, history, o.UserContext, dialect)
 
 			// 2. Dataframes as Tables (THE NEW WAY)
 			if o.StagedName != "" {
@@ -81,6 +104,9 @@ func (o *Orchestrator) ProcessQuery(ctx context.Context, userInput string) (stri
 				systemPrompt += "\nCRITICAL: DO NOT ask for data samples. Write standard SQL queries against 'df_" + o.StagedName + "' to analyze the data. I will execute them against the local SQLite store."
 			}
 
+		if len(o.Connections) > 1 {
+			systemPrompt += "\n\nCRITICAL: MULTIPLE DATA SOURCES DETECTED. You can join across them by using the format 'alias.table_name' in your SQL query. If they are from the same driver, I will handle the routing. If they are from different drivers, prioritize analyzing them sequentially unless they are imported files (which all live in the same SQLite engine)."
+		}
 		if len(o.Files) > 0 {
 			ui.RenderStep("📦", fmt.Sprintf("Informing AI about %d imported files...", len(o.Files)))
 			var filesNote strings.Builder
@@ -94,7 +120,7 @@ func (o *Orchestrator) ProcessQuery(ctx context.Context, userInput string) (stri
 		}
 	} else if len(o.Files) > 0 {
 		ui.RenderStep("📦", fmt.Sprintf("Bundling %d files for text-based analysis...", len(o.Files)))
-		systemPrompt = BuildFilesPrompt(o.Files, history, o.UserContext, nil)
+		systemPrompt = BuildFilesPrompt(o.Files, history, o.UserContext, nil, "sqlite")
 	}
 
 	ui.RenderStep("🗜️", "Compressing prompt for token efficiency...")
@@ -403,86 +429,49 @@ func extractChartData(text string) func() string {
 }
 
 func (o *Orchestrator) ExecuteAndRender(query string) error {
-	var lastErr error
-	for alias, conn := range o.Connections {
-		// Intelligent routing: if query has alias.table, strip it for the specific DB
-		cleanQuery := query
-		// Find all occurrences of "alias." and remove them
-		pattern := fmt.Sprintf(`(?i)%s\.`, regexp.QuoteMeta(alias))
-		cleanQuery = regexp.MustCompile(pattern).ReplaceAllString(query, "")
-
-		// Detokenize any PII tokens in the query so the DB can find real values
-		if privacy.ActiveVault != nil {
-			cleanQuery = privacy.ActiveVault.Detokenize(cleanQuery)
-		}
-
-		rows, err := conn.DB.Query(cleanQuery)
-		if err == nil {
-			defer rows.Close()
-			cols, err := rows.Columns()
-			if err != nil {
-				return err
-			}
-
-			var data [][]string
-			for rows.Next() {
-				vals := make([]interface{}, len(cols))
-				valPtrs := make([]interface{}, len(cols))
-				for i := range vals {
-					valPtrs[i] = &vals[i]
-				}
-
-				if err := rows.Scan(valPtrs...); err != nil {
-					return err
-				}
-
-				row := make([]string, len(cols))
-				for i, v := range vals {
-					if b, ok := v.([]byte); ok {
-						row[i] = string(b)
-					} else {
-						row[i] = fmt.Sprintf("%v", v)
-					}
-				}
-				data = append(data, row)
-			}
-			
-			// Save raw results for dataframe feature
-			o.LastCols = cols
-			o.LastRows = data
-
-			// Build CSV-like format instead of JSON (Much more token efficient)
-			var sb strings.Builder
-			sb.WriteString(strings.Join(cols, "|") + "\n")
-			
-			sampleSize := len(data)
-			if sampleSize > 20 {
-				sampleSize = 20
-			}
-			for i := 0; i < sampleSize; i++ {
-				row := data[i]
-				for j, val := range row {
-					cellVal := val
-					if privacy.ActiveVault != nil && privacy.PrivacyMode {
-						cellVal = privacy.ActiveVault.Tokenize(cellVal)
-					}
-					sb.WriteString(cellVal)
-					if j < len(row)-1 {
-						sb.WriteString("|")
-					}
-				}
-				sb.WriteString("\n")
-			}
-			
-			o.LastResultData = fmt.Sprintf("Format: CSV (Pipe Separated)\nData (showing 20 of %d rows):\n%s", 
-				len(data), sb.String())
-
-			ui.RenderTable(cols, data)
-			return nil
-		}
-		lastErr = err
+	// Detokenize any PII tokens in the query so the DB can find real values
+	cleanQuery := query
+	if privacy.ActiveVault != nil {
+		cleanQuery = privacy.ActiveVault.Detokenize(query)
 	}
-	return lastErr
+
+	cols, data, err := o.ExecuteCrossQuery(cleanQuery)
+	if err != nil {
+		return err
+	}
+
+	// Save raw results for dataframe feature
+	o.LastCols = cols
+	o.LastRows = data
+
+	// Build CSV-like format for AI context (Much more token efficient)
+	var sb strings.Builder
+	sb.WriteString(strings.Join(cols, "|") + "\n")
+	
+	sampleSize := len(data)
+	if sampleSize > 20 {
+		sampleSize = 20
+	}
+	for i := 0; i < sampleSize; i++ {
+		row := data[i]
+		for j, val := range row {
+			cellVal := val
+			if privacy.ActiveVault != nil && privacy.PrivacyMode {
+				cellVal = privacy.ActiveVault.Tokenize(cellVal)
+			}
+			sb.WriteString(cellVal)
+			if j < len(row)-1 {
+				sb.WriteString("|")
+			}
+		}
+		sb.WriteString("\n")
+	}
+	
+	o.LastResultData = fmt.Sprintf("Format: CSV (Pipe Separated)\nData (showing 20 of %d rows):\n%s", 
+		len(data), sb.String())
+
+	ui.RenderTable(cols, data)
+	return nil
 }
 
 func extractSQL(text string) string {
@@ -503,12 +492,99 @@ func extractJSON(text string) string {
 	return ""
 }
 
+func (o *Orchestrator) ExecuteCrossQuery(query string) ([]string, [][]string, error) {
+	// 1. Identify involved aliases
+	involvedAliases := []string{}
+	for alias := range o.Connections {
+		if strings.Contains(query, alias+".") {
+			involvedAliases = append(involvedAliases, alias)
+		}
+	}
+
+	// 2. If no aliases or only one, try standard routing
+	if len(involvedAliases) <= 1 {
+		// Just try logic similar to ExecuteAndRender but return data
+		for alias, conn := range o.Connections {
+			cleanQuery := query
+			if len(involvedAliases) == 1 && involvedAliases[0] == alias {
+				pattern := fmt.Sprintf(`(?i)%s\.`, regexp.QuoteMeta(alias))
+				cleanQuery = regexp.MustCompile(pattern).ReplaceAllString(query, "")
+			}
+			
+			rows, err := conn.DB.Query(cleanQuery)
+			if err == nil {
+				defer rows.Close()
+				cols, _ := rows.Columns()
+				var data [][]string
+				for rows.Next() {
+					vals := make([]interface{}, len(cols))
+					ptr := make([]interface{}, len(cols))
+					for i := range vals { ptr[i] = &vals[i] }
+					rows.Scan(ptr...)
+					row := make([]string, len(cols))
+					for i, v := range vals { row[i] = fmt.Sprintf("%v", v) }
+					data = append(data, row)
+				}
+				return cols, data, nil
+			}
+		}
+		// Try dataframe engine as last resort
+		return dataframe.Query(query)
+	}
+
+	// 3. Multi-source join logic (Supported for SQLite only for now)
+	isAllSQLite := true
+	for _, alias := range involvedAliases {
+		if o.Connections[alias].Driver != "sqlite" {
+			isAllSQLite = false
+			break
+		}
+	}
+
+	if isAllSQLite {
+		ui.RenderStep("🔗", "Performing cross-source SQLite join...")
+		// Use an in-memory DB or the dataframes.db as master
+		masterDB, err := sql.Open("sqlite3", ":memory:")
+		if err != nil {
+			return nil, nil, err
+		}
+		defer masterDB.Close()
+
+		for _, alias := range involvedAliases {
+			attachSQL := fmt.Sprintf("ATTACH DATABASE '%s' AS %s", o.Connections[alias].DSN, alias)
+			if _, err := masterDB.Exec(attachSQL); err != nil {
+				return nil, nil, fmt.Errorf("failed to attach %s: %v", alias, err)
+			}
+		}
+
+		rows, err := masterDB.Query(query)
+		if err != nil {
+			return nil, nil, err
+		}
+		defer rows.Close()
+		cols, _ := rows.Columns()
+		var data [][]string
+		for rows.Next() {
+			vals := make([]interface{}, len(cols))
+			ptr := make([]interface{}, len(cols))
+			for i := range vals { ptr[i] = &vals[i] }
+			rows.Scan(ptr...)
+			row := make([]string, len(cols))
+			for i, v := range vals { row[i] = fmt.Sprintf("%v", v) }
+			data = append(data, row)
+		}
+		return cols, data, nil
+	}
+
+	return nil, nil, fmt.Errorf("cross-source joins are currently only supported for SQLite (imported files)")
+}
+
 func validateReadOnly(query string) error {
 	forbidden := []string{"INSERT", "UPDATE", "DELETE", "DROP", "TRUNCATE", "ALTER", "CREATE", "REPLACE", "GRANT", "REVOKE"}
 	for _, word := range forbidden {
 		re := regexp.MustCompile(`(?i)\b` + word + `\b`)
 		if re.MatchString(query) {
-			return fmt.Errorf("security violation: non-read-only operation '%s' detected. InsightCLI is restricted to READ-ONLY mode", word)
+			return fmt.Errorf("security violation: non-read-only operation '%s' detected. Mayo is restricted to READ-ONLY mode", word)
 		}
 	}
 	return nil
@@ -548,4 +624,121 @@ SESSION LOGS:
 	report = regexp.MustCompile("(?is)<thought>.*?</thought>").ReplaceAllString(report, "")
 
 	return strings.TrimSpace(report), nil
+}
+
+func (o *Orchestrator) SyncSchema(ctx context.Context) error {
+	if len(o.Connections) == 0 {
+		return fmt.Errorf("no active connections to scan")
+	}
+
+	for alias, conn := range o.Connections {
+		ui.RenderStep("🔍", fmt.Sprintf("Scanning and enriching schema for '%s'...", alias))
+		schema, err := db.ScanAndEnrichSchema(ctx, conn.DB, conn.Driver)
+		if err != nil {
+			return err
+		}
+		conn.Schema = schema
+		
+		// Save to session directory if active
+		if o.Session != nil {
+			sessionDir := filepath.Join(config.GetConfigDir(), "sessions", o.Session.ID)
+			os.MkdirAll(sessionDir, 0755)
+			metadataPath := filepath.Join(sessionDir, fmt.Sprintf("metadata_%s.md", alias))
+			md := db.ExportSchemaToMarkdown(schema)
+			os.WriteFile(metadataPath, []byte(md), 0644)
+			ui.PrintSuccess(fmt.Sprintf("Metadata for '%s' saved to session file: %s", alias, metadataPath))
+		}
+	}
+	return nil
+}
+
+func (o *Orchestrator) LoadMetadata(alias string) {
+	if o.Session == nil {
+		return
+	}
+	sessionDir := filepath.Join(config.GetConfigDir(), "sessions", o.Session.ID)
+	metadataPath := filepath.Join(sessionDir, fmt.Sprintf("metadata_%s.md", alias))
+	
+	if data, err := os.ReadFile(metadataPath); err == nil {
+		schema, err := db.ParseSchemaFromMarkdown(string(data))
+		if err == nil && schema != nil {
+			if conn, ok := o.Connections[alias]; ok {
+				if conn.Schema == nil {
+					conn.Schema = schema
+				} else {
+					// Merge descriptions into existing schema
+					for _, parsedTbl := range schema.Tables {
+						for i := range conn.Schema.Tables {
+							if conn.Schema.Tables[i].Name == parsedTbl.Name {
+								conn.Schema.Tables[i].Description = parsedTbl.Description
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+func (o *Orchestrator) Describe(ctx context.Context, target string) (string, error) {
+	// 1. Identify Target (DS alias or "df")
+	if target == "df" || target == "" {
+		if o.StagedName == "" && len(o.LastRows) == 0 {
+			return "", fmt.Errorf("no active dataframe to describe")
+		}
+		ui.RenderStep("📊", fmt.Sprintf("Generating descriptive statistics for active dataframe '%s'...", o.StagedName))
+		
+		// Get basic stats from LastRows
+		rowCount := len(o.LastRows)
+		
+		sampleData := o.LastResultData
+		if len(sampleData) > 2000 {
+			sampleData = sampleData[:2000] + "..."
+		}
+
+		describePrompt := fmt.Sprintf(`You are Mayo. Provide a Pandas-style "describe()" summary for the following dataframe:
+Name: %s
+Total Rows: %d
+Columns: %s
+Sample Data:
+%s
+
+TASK: 
+Provide a markdown table showing statistics (Count, Mean, Std, Min, Max, etc.) for numeric columns, and unique/top/freq for categorical columns. 
+If numeric data isn't obvious, use your best judgment. Be professional and helpful.`, o.StagedName, rowCount, strings.Join(o.LastCols, ", "), sampleData)
+
+		resp, _, err := o.AI.GenerateResponse(ctx, "You are a senior data scientist specializing in statistical summaries.", describePrompt)
+		if err != nil {
+			return "", err
+		}
+		return resp, nil
+	}
+
+	// 2. Identify if target is a connection alias
+	if conn, ok := o.Connections[target]; ok {
+		ui.RenderStep("📡", fmt.Sprintf("Describing data source '%s'...", target))
+		if conn.Schema == nil {
+			o.SyncSchema(ctx)
+		}
+		
+		schemaMD := db.ExportSchemaToMarkdown(conn.Schema)
+		describePrompt := fmt.Sprintf(`You are Mayo. Provide a summary of this data source:
+Alias: %s
+Driver: %s
+Schema Metadata:
+%s
+
+TASK:
+1. Summarize the content of this data source concisely.
+2. List the most important tables and their row counts.
+3. Identify potential "key" tables for joining.
+4. Format as professional Markdown.`, target, conn.Driver, schemaMD)
+
+		resp, _, err := o.AI.GenerateResponse(ctx, "You are a senior database architect and analyst.", describePrompt)
+		if err != nil {
+			return "", err
+		}
+		return resp, nil
+	}
+
+	return "", fmt.Errorf("target '%s' not found. Use a connection alias or 'df'", target)
 }

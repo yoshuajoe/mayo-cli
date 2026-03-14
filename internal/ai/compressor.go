@@ -23,10 +23,23 @@ func (c *Compressor) CompressSchema(schema *db.Schema) string {
 		b.WriteString(t.Name + "(")
 		var cols []string
 		for _, col := range t.Columns {
-			cols = append(cols, col.Name)
+			cStr := col.Name
+			if col.Type != "" {
+				cStr += ":" + col.Type
+			}
+			if col.IsCategorical && len(col.Categories) > 0 {
+				cStr += "[cats:" + strings.Join(col.Categories, ",") + "]"
+			} else if len(col.SampleValues) > 0 {
+				cStr += "[samples:" + strings.Join(col.SampleValues, ",") + "]"
+			}
+			cols = append(cols, cStr)
 		}
 		b.WriteString(strings.Join(cols, "|"))
-		b.WriteString(")")
+		if t.Description != "" {
+			b.WriteString(") -- " + t.Description + "\n")
+		} else {
+			b.WriteString(")\n")
+		}
 	}
 	return b.String()
 }
@@ -37,22 +50,51 @@ func (c *Compressor) CompressContext(text string) string {
 		return ""
 	}
 
-	// 1. Remove excessive whitespace and empty lines
 	lines := strings.Split(text, "\n")
 	var curated []string
+	var currentBlock []string
+	var isPriority bool
+
 	for _, l := range lines {
 		trimmed := strings.TrimSpace(l)
-		if trimmed != "" {
-			// 2. Remove common prefixes that AI doesn't need repeatedly
-			trimmed = strings.TrimPrefix(trimmed, "## ")
-			curated = append(curated, trimmed)
+		if trimmed == "" {
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "User:") || strings.HasPrefix(trimmed, "Mayo SQL:") || strings.HasPrefix(trimmed, "Analyst Insight:") {
+			isPriority = true
+			if len(currentBlock) > 0 {
+				curated = append(curated, strings.Join(currentBlock, " "))
+				currentBlock = nil
+			}
+			currentBlock = append(currentBlock, trimmed)
+		} else if strings.HasPrefix(trimmed, "Mayo:") {
+			isPriority = false
+			if len(currentBlock) > 0 {
+				curated = append(curated, strings.Join(currentBlock, " "))
+				currentBlock = nil
+			}
+			// Truncate plain Mayo responses to keep them from dominating context
+			if len(trimmed) > 150 {
+				trimmed = trimmed[:147] + "..."
+			}
+			currentBlock = append(currentBlock, trimmed)
+		} else {
+			// Continuation of previous block
+			if isPriority || len(currentBlock) < 3 { // Keep non-priority blocks short
+				currentBlock = append(currentBlock, trimmed)
+			}
 		}
 	}
+	if len(currentBlock) > 0 {
+		curated = append(curated, strings.Join(currentBlock, " "))
+	}
 
-	result := strings.Join(curated, " ") // Use space instead of newline to save tokens
+	// Join with newlines for clarity but keep total tokens low
+	result := strings.Join(curated, "\n")
 
-	// 3. Strict truncation for cost control (keep only the most recent ~5000 chars)
-	maxLen := 5000
+	// Strict truncation for cost control (keep only the most recent ~8000 chars)
+	maxLen := 8000
 	if len(result) > maxLen {
 		result = "... " + result[len(result)-maxLen:]
 	}

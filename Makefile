@@ -73,3 +73,8 @@ help:
 	@echo "  make clean      - Remove build artifacts"
 	@echo "  make install    - Install binary to GOPATH/bin"
 	@echo "  make uninstall  - Remove binary from GOPATH/bin"
+	@echo "  make release    - Run release automation (version, changelog, tags)"
+
+# Release automation
+release:
+	@./scripts/release.sh

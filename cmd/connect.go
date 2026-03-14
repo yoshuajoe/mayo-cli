@@ -34,17 +34,43 @@ func HandleConnect(driver, dsn, alias string, source string) {
 
 	ensureOrchestrator(cfg)
 
+	// 1. Check if profile already exists for this DSN/Driver to avoid duplicates
+	exists := false
+	finalProfileName := source
+	
+	for _, p := range cfg.DSProfiles {
+		if p.DSN == dsn && p.Driver == driver {
+			exists = true
+			if finalProfileName == "" {
+				finalProfileName = p.Name
+			}
+			// Recover alias from existing profile name if possible
+			// Pattern: DS_driver_alias
+			parts := strings.Split(p.Name, "_")
+			if len(parts) >= 3 && alias == "" {
+				alias = parts[2]
+			}
+			break
+		}
+	}
+
 	if alias == "" {
 		alias = fmt.Sprintf("ds_%d", len(GlobalOrchestrator.Connections)+1)
 	}
 
-	// Check if alias already exists
-	if _, exists := GlobalOrchestrator.Connections[alias]; exists {
+	// 2. Fallback profile naming
+	if finalProfileName == "" {
+		finalProfileName = fmt.Sprintf("DS_%s_%s", driver, alias)
+	}
+
+	// Check if alias already exists in active connections
+	if _, active := GlobalOrchestrator.Connections[alias]; active {
 		ui.PrintInfo(fmt.Sprintf("Alias '%s' already exists. Overwriting...", alias))
 	}
 
-	// Check if it's a file or directory connection
+	// 3. Connection and Data Processing logic
 	if driver == "file" || driver == "csv" || driver == "xlsx" || driver == "folder" {
+		// ... (file connection logic)
 		var filesList []*files.FileData
 		var err error
 
@@ -71,10 +97,7 @@ func HandleConnect(driver, dsn, alias string, source string) {
 			return
 		}
 
-		// --- Convert to SQLite ---
-		ui.RenderStep("🗄️", fmt.Sprintf("[%s] Converting file data to SQLite...", alias))
 		sqlitePath := filepath.Join(config.GetConfigDir(), "data", alias+".db")
-		
 		ctxDB, cancelDB := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancelDB()
 
@@ -93,25 +116,19 @@ func HandleConnect(driver, dsn, alias string, source string) {
 			}
 		}
 
-		schema, _ := db.ScanSchema(ctxDB, sqliteDB, "sqlite")
-		
-		// Use provided source name or fallback to dsn
-		finalSource := source
-		if finalSource == "" {
-			finalSource = dsn
-		}
-
 		GlobalOrchestrator.Connections[alias] = &ai.DBConnection{
 			Alias:    alias,
-			Source:   finalSource,
+			Source:   finalProfileName,
+			DSN:      sqlitePath,
 			DB:       sqliteDB,
 			Driver:   "sqlite",
-			Schema:   schema,
 			IsImport: true,
 		}
+		GlobalOrchestrator.SyncSchema(ctxDB)
 		GlobalOrchestrator.Files = append(GlobalOrchestrator.Files, filesList...)
 
 	} else {
+		// ... (database connection logic)
 		ctxDB, cancelDB := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancelDB()
 
@@ -122,46 +139,41 @@ func HandleConnect(driver, dsn, alias string, source string) {
 		}
 		ui.PrintSuccess(fmt.Sprintf("[%s] Connected to database (%s).", alias, driver))
 
-		ui.RenderStep("🕵️", fmt.Sprintf("[%s] Scanning schema...", alias))
-		schema, err := db.ScanSchema(ctxDB, database, driver)
-		if err != nil {
-			ui.PrintError(fmt.Sprintf("Scan failed: %v", err))
-			return
-		}
-
-		// Use provided source name or fallback to dsn
-		finalSource := source
-		if finalSource == "" {
-			finalSource = dsn
-		}
-
 		GlobalOrchestrator.Connections[alias] = &ai.DBConnection{
 			Alias:  alias,
-			Source: finalSource,
+			Source: finalProfileName,
+			DSN:    dsn,
 			DB:     database,
 			Driver: driver,
-			Schema: schema,
 		}
+		ui.RenderStep("✨", fmt.Sprintf("[%s] Enriching metadata...", alias))
+		GlobalOrchestrator.SyncSchema(ctxDB)
 	}
 
-	// Update profiles list but DON'T auto-set as ActiveDSProfile 
-	// unless it's explicitly done via /profile ds
-	newProfile := config.DSProfile{
-		Name:   fmt.Sprintf("DS_%s_%s", driver, alias),
-		Driver: driver,
-		DSN:    dsn,
-	}
-	
-	exists := false
-	for _, p := range cfg.DSProfiles {
-		if p.DSN == dsn && p.Driver == driver {
-			exists = true
-			break
-		}
-	}
+	// 4. Update profile in config if new
 	if !exists {
+		newProfile := config.DSProfile{
+			Name:   finalProfileName,
+			Driver: driver,
+			DSN:    dsn,
+		}
 		cfg.DSProfiles = append(cfg.DSProfiles, newProfile)
 		config.SaveConfig(cfg)
+	}
+
+	// 5. Persist to session
+	if GlobalSess != nil {
+		found := false
+		for _, p := range GlobalSess.ConnectedProfiles {
+			if p == finalProfileName {
+				found = true
+				break
+			}
+		}
+		if !found {
+			GlobalSess.ConnectedProfiles = append(GlobalSess.ConnectedProfiles, finalProfileName)
+			session.SaveSessionMetadata(GlobalSess)
+		}
 	}
 }
 

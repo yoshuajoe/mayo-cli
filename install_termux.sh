@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# InsightCLI Termux Installer Script
-# This script prepares Termux environment and builds InsightCLI
+# Mayo Termux Installer Script
+# This script prepares Termux environment and builds Mayo
 
-echo "🚀 Starting InsightCLI Installation for Termux..."
+echo "🚀 Starting Mayo Installation for Termux..."
 
 # 1. Update and install dependencies
 echo "📦 Updating packages and installing Go..."
@@ -15,7 +15,7 @@ echo "📁 Requesting storage access (please allow the popup on your phone)..."
 termux-setup-storage
 
 # 3. Build the application
-echo "🔨 Building InsightCLI binary..."
+echo "🔨 Building Mayo binary..."
 go build -o insight main.go
 
 # 4. Create a shortcut in /usr/bin for easy access

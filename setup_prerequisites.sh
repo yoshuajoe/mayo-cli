@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# InsightCLI Prerequisites Setup Script
+# Mayo Prerequisites Setup Script
 # This script helps install extensions for Vector Search in SQLite
 
 set -e
@@ -53,7 +53,7 @@ fi
 echo ""
 echo "--- Installation Guide ---"
 echo "1. The extensions will be searched in $EXTENSION_DIR"
-echo "2. InsightCLI will automatically try to load these if available."
+echo "2. Mayo will automatically try to load these if available."
 echo "3. For Vector Search, make sure you have the 'sqlite-vector' extension loaded."
 echo "---"
 

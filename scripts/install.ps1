@@ -1,5 +1,5 @@
 # Mayo - Unified Installation Script for Windows (PowerShell)
-# Developed by Popolo Research Labs
+# Mayo by Teleskop.id
 
 Write-Host "🐶 Mayo Setup - Windows Intelligence Installer" -ForegroundColor Blue
 

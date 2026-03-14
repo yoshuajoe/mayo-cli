@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Mayo - Unified Installation Script for Unix (Mac/Linux)
-# Developed by Popolo Research Labs
+# Mayo by Teleskop.id
 
 set -e
 
