@@ -2,7 +2,7 @@ name: Auto Changelog Update
 
 on:
   push:
-    branches: [ main ]
+    branches: [ master ]
     # Also run on tags
     tags: [ 'v*' ]
 

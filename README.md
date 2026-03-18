@@ -1,7 +1,7 @@
 # 🐩 Mayo CLI: Autonomous AI Research & Data Analysis Partner
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/yoshuajoe/mayo-cli)](https://goreportcard.com/report/github.com/yoshuajoe/mayo-cli)
-[![Build Status](https://github.com/yoshuajoe/mayo-cli/workflows/test.yml/badge.svg)](https://github.com/yoshuajoe/mayo-cli/actions)
+[![Build Status](https://github.com/yoshuajoe/mayo-cli/actions/workflows/test.yml/badge.svg)](https://github.com/yoshuajoe/mayo-cli/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 **Mayo CLI** is an autonomous AI companion for your terminal, designed to transform how you interact with data. Whether you're a data scientist, researcher, or developer, Mayo helps you query, analyze, and enrich your datasets using natural language—all while keeping your data private and secure.
@@ -132,4 +132,4 @@ Distributed under the MIT License. See `LICENSE` for more information.
 
 ---
 
-*Made with ❤️ by [Yoshua Joe](https://github.com/yoshuajoe)*
+*Made with ❤️ by [Yoshua Putro](https://github.com/yoshuajoe)*
