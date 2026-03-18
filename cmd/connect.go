@@ -184,10 +184,13 @@ func ensureOrchestrator(cfg *config.Config) {
 			GlobalSess, _ = session.NewSession()
 		}
 		GlobalOrchestrator = &ai.Orchestrator{
-			AI:          GlobalAI,
-			Connections: make(map[string]*ai.DBConnection),
-			Session:     GlobalSess,
-			UserContext: cfg.UserContext,
+			AI:             GlobalAI,
+			Connections:    make(map[string]*ai.DBConnection),
+			Session:        GlobalSess,
+			UserContext:    cfg.UserContext,
+			DefaultLimit:   cfg.DefaultLimit,
+			Interactive:    cfg.Interactive,
+			AnalystEnabled: cfg.AnalystEnabled,
 		}
 	}
 }

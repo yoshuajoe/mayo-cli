@@ -18,7 +18,7 @@ func BuildSystemPrompt(schema *db.Schema, contextContent string, userContext str
 SQL DIALECT HINTS (%s):
 %s
 
-DATABASE (Compressed):
+DATABASE SCHEMA (Compressed):
 %s
 
 BUSINESS CONTEXT:
@@ -27,18 +27,25 @@ BUSINESS CONTEXT:
 USER CUSTOM CONTEXT:
 %s
 
+METADATA & SCHEMA INTEGRITY:
+1. **STRICT Table & Column Locking**: You MUST ONLY use table names and column names exactly as they appear in the DATABASE SCHEMA (Compressed) section above. 
+2. **NO Hallucinations**: Do NOT assume a table exists if it is not listed. Do NOT guess column names based on file names.
+3. **Verification Step**: Before writing any SQL, verified that EVERY table and EVERY column in your query is explicitly present in the schema provided.
+4. **Alias Usage**: If multiple data sources are provided, use the 'alias.table_name' format.
+
 CHAIN OF THOUGHT (CoT) REASONING:
 Before providing any SQL or final answer, you MUST think step-by-step:
 1.  **Analyze**: Understand intent and business logic.
-2.  **Plan**: Identify tables/files and dialect-specific functions.
-3.  **Execute**: Formulate optimal SQL.
-4.  **Refine**: Ensure query is read-only, safe, and efficient for the target dialect.
+2.  **Schema Check**: Identify the EXACT tables and columns needed from the provided metadata. If names differ from your intuition (e.g., underscores vs spaces), use the names from the schema.
+3.  **Plan**: Identify dialect-specific functions and join logic.
+4.  **Execute**: Formulate optimal SQL.
+5.  **Refine**: Ensure query is read-only, safe, and efficient for the target dialect.
 
 STRICT RULES:
 1. ONLY generate READ-ONLY queries (SELECT).
 2. ALWAYS use a "Thought Block": ` + "```thought ... ```" + `
 3. Provide a scannable Markdown report after the thought block.
-4. **QUERY SCOPE**: By default, generate queries that select ALL relevant fields and ALL data rows WITHOUT any LIMIT, unless the user explicitly requests a sample or a specific limit.
+4. **QUERY SCOPE**: By default, select ALL relevant fields and ALL data rows WITHOUT any LIMIT, unless the user explicitly requests a sample or a specific limit.
 
 Always prioritize accuracy, safety, and the target dialect's constraints. Refer to detailed dialect documentation for complex functions.`
 
@@ -67,7 +74,11 @@ Error: %s
 Original Query: %s
 
 Please analyze the error and provide a corrected SQL query. 
-STRICT RULE: The query MUST be READ-ONLY (SELECT). Any WRITE operations will be blocked.
+STRICT RULES:
+1. The query MUST be READ-ONLY (SELECT).
+2. **METADATA CHECK**: Re-verify that all table names and column names in your corrected query MATCH the DATABASE SCHEMA (Compressed) provided in the system prompt.
+3. **NO HALLUCINATION**: Do not assume existence of fields or tables not seen in the schema.
+
 Respond ONLY with the new SQL query in a code block.`, errorMsg, originalQuery)
 }
 
@@ -99,19 +110,27 @@ USER CUSTOM CONTEXT:
 DATABASE SCHEMA (Compressed):
 %s
 
-CHAIN OF THOUGHT (CoT):
-Show your logic in a ` + "```thought ... ```" + ` block first.
-1. Analyze all data sources (files & database).
-2. Note that files are also imported into the database as tables. Check the schema.
-3. Use SQL queries (optimized for the target dialect) for deep analysis.
-4. Respond in professional Markdown with insights.
+METADATA & SCHEMA INTEGRITY:
+1. **STRICT Table & Column Locking**: You MUST ONLY use table names and column names exactly as they appear in the DATABASE SCHEMA (Compressed) section. 
+2. **NO Hallucinations**: Do NOT assume a table exists if it is not listed. Do NOT guess column names based on file names.
+3. **Verification Step**: Before writing any SQL, verified that EVERY table and EVERY column in your query is explicitly present in the schema provided.
+4. **Alias Usage**: If multiple data sources are provided, use the 'alias.table_name' format.
+
+CHAIN OF THOUGHT (CoT) REASONING:
+Before providing any SQL or final answer, you MUST think step-by-step:
+1. **Analyze**: Understand intent and business logic across all sources (files & database).
+2. **Schema Check**: Identify the EXACT tables and columns needed from the PROVIDED SCHEMA. Note that files are also imported into the database as tables. Use the table names listed in the schema.
+3. **Plan**: Identify dialect-specific functions and join logic.
+4. **Execute**: Formulate optimal SQL.
+5. **Refine**: Ensure query is read-only, safe, and efficient.
 
 STRICT RULES:
 1. ONLY generate READ-ONLY queries (SELECT).
-2. ALWAYS use a "Thought Block".
-3. **QUERY SCOPE**: By default, load ALL fields and ALL data rows. Do NOT apply LIMIT unless explicitly requested by the user.
+2. ALWAYS use a "Thought Block": ` + "```thought ... ```" + `
+3. Provide a scannable Markdown report after the thought block.
+4. **QUERY SCOPE**: By default, load ALL fields and ALL data rows. Do NOT apply LIMIT unless explicitly requested by the user.
 
-Always use a thought block and aim for premium analysis.`
+Always prioritize accuracy, safety, and the target dialect's constraints.`
 
 	safeUserCtx := privacy.ApplyPrivacy(userContext)
 	safeCtxContent := privacy.ApplyPrivacy(contextContent)

@@ -2,6 +2,7 @@ package dataframe
 
 import (
 	"database/sql"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	"mayo-cli/internal/config"
+
+	"github.com/xuri/excelize/v2"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -183,6 +186,68 @@ func ExportMarkdown(name string) (string, error) {
 		sb.WriteString("| " + strings.Join(row, " | ") + " |\n")
 	}
 	return sb.String(), nil
+}
+
+func ExportCSV(name string, path string) error {
+	columns, rows, err := Load(name)
+	if err != nil {
+		return err
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	w := csv.NewWriter(f)
+	w.Write(columns)
+	w.WriteAll(rows)
+	return w.Error()
+}
+
+func ExportJSON(name string, path string) error {
+	columns, rows, err := Load(name)
+	if err != nil {
+		return err
+	}
+	var data []map[string]interface{}
+	for _, row := range rows {
+		item := make(map[string]interface{})
+		for i, col := range columns {
+			item[col] = row[i]
+		}
+		data = append(data, item)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return json.NewEncoder(f).Encode(data)
+}
+
+func ExportExcel(name string, path string) error {
+	columns, rows, err := Load(name)
+	if err != nil {
+		return err
+	}
+	f := excelize.NewFile()
+	sheet := "Sheet1"
+	f.SetSheetName("Sheet1", name)
+	sheet = name
+	
+	// Headers
+	for i, col := range columns {
+		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
+		f.SetCellValue(sheet, cell, col)
+	}
+	// Data
+	for r, row := range rows {
+		for c, val := range row {
+			cell, _ := excelize.CoordinatesToCellName(c+1, r+2)
+			f.SetCellValue(sheet, cell, val)
+		}
+	}
+	return f.SaveAs(path)
 }
 
 // Delete removes a saved dataframe

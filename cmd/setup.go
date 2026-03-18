@@ -15,6 +15,59 @@ func RunSetup() {
 		cfg = &config.Config{}
 	}
 
+	// 1.B: Keyring Setup
+	survey.AskOne(&survey.Confirm{
+		Message: "Store credentials in system keyring?",
+		Default: true,
+	}, &cfg.UseKeyring)
+
+	// 1.C: Default Limit Setup
+	var useLimit bool
+	survey.AskOne(&survey.Confirm{
+		Message: "Enable default SQL LIMIT per query (prevent large loads)?",
+		Default: true,
+	}, &useLimit)
+
+	if useLimit {
+		var limitVal int
+		survey.AskOne(&survey.Input{
+			Message: "Max rows per query:",
+			Default: "1000",
+		}, &limitVal)
+		cfg.DefaultLimit = limitVal
+	} else {
+		cfg.DefaultLimit = 0 // No limit by default
+	}
+
+	// 2.B: Interactive Mode Setup
+	survey.AskOne(&survey.Confirm{
+		Message: "Enable Interactive Mode (Confirm/Edit SQL before execution)?",
+		Default: true,
+	}, &cfg.Interactive)
+
+	// Analyst Insight Setup
+	survey.AskOne(&survey.Confirm{
+		Message: "Enable Analyst Insight (Automatic AI analysis of query results)?",
+		Default: true,
+	}, &cfg.AnalystEnabled)
+
+	// Teleskop.id Setup
+	var setupTeleskop bool
+	survey.AskOne(&survey.Confirm{
+		Message: "Configure Teleskop.id Scraper?",
+		Default: true,
+	}, &setupTeleskop)
+
+	if setupTeleskop {
+		var teleskopKey string
+		survey.AskOne(&survey.Password{
+			Message: "Enter Teleskop.id API Key:",
+		}, &teleskopKey)
+		if teleskopKey != "" {
+			cfg.SetTeleskopAPIKey(teleskopKey)
+		}
+	}
+
 	var profileName string
 	err := survey.AskOne(&survey.Input{
 		Message: "Enter profile name (e.g., 'work', 'personal', 'gemini-pro'):",
@@ -28,7 +81,7 @@ func RunSetup() {
 	var provider string
 	err = survey.AskOne(&survey.Select{
 		Message: "Choose LLM Provider:",
-		Options: []string{"gemini", "openai", "groq", "anthropic"},
+		Options: config.GetProviderList(),
 	}, &provider)
 	if err != nil {
 		ui.PrintInfo("Setup cancelled.")
@@ -44,16 +97,31 @@ func RunSetup() {
 		return
 	}
 
-	defaultModel := ""
-	if provider == "openai" {
-		defaultModel = "gpt-4o"
-	} else if provider == "groq" {
-		defaultModel = "llama-3.3-70b-versatile"
-	} else if provider == "anthropic" {
-		defaultModel = "claude-3-5-sonnet-20241022"
-	} else if provider == "gemini" {
-		defaultModel = "gemini-1.5-flash"
+	models := config.GetModelList(provider)
+	var selectedModel string
+	if len(models) > 0 {
+		err = survey.AskOne(&survey.Select{
+			Message: "Select Default Model:",
+			Options: models,
+		}, &selectedModel)
+	} else {
+		// Fallback defaults if list is empty for some reason
+		if provider == "openai" {
+			selectedModel = "gpt-4o"
+		} else if provider == "groq" {
+			selectedModel = "llama-3.3-70b-versatile"
+		} else if provider == "anthropic" {
+			selectedModel = "claude-3-5-sonnet"
+		} else {
+			selectedModel = "gemini-2.5-flash"
+		}
 	}
+
+	if selectedModel == "" {
+		ui.PrintInfo("Setup incomplete: model not selected.")
+		return
+	}
+	defaultModel := selectedModel
 
 	// Update or Add profile
 	found := false
@@ -68,19 +136,20 @@ func RunSetup() {
 			}
 			
 			cfg.AIProfiles[i].Provider = provider
-			cfg.AIProfiles[i].APIKey = apiKey
+			cfg.AIProfiles[i].SetAPIKey(apiKey, cfg.UseKeyring)
 			found = true
 			break
 		}
 	}
 
 	if !found {
-		cfg.AIProfiles = append(cfg.AIProfiles, config.AIProfile{
+		p := config.AIProfile{
 			Name:         profileName,
 			Provider:     provider,
-			APIKey:       apiKey,
 			DefaultModel: defaultModel,
-		})
+		}
+		p.SetAPIKey(apiKey, cfg.UseKeyring)
+		cfg.AIProfiles = append(cfg.AIProfiles, p)
 	}
 
 

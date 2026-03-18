@@ -1,72 +1,106 @@
 #!/bin/bash
 
-# Mayo - Unified Installation Script for Unix (Mac/Linux)
-# Mayo by Teleskop.id
+# Mayo CLI Installer
+# Inspired by Homebrew and other modern CLI installers
 
 set -e
 
-# Colors for UI
+# Configuration
+REPO="yoshuajoe/mayo-cli" # Adjust this to the actual repository path
+BINARY_NAME="mayo"
+INSTALL_DIR="/usr/local/bin"
+MAYODIR="$HOME/.mayo-cli"
+
+# Colors for output
+RED='\033[0;31m'
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m'
+NC='\033[0m' # No Color
 
-echo -e "${BLUE}🐶 Mayo Setup - Unix Intelligence Installer${NC}"
+printf "${BLUE}🚀 Installing Mayo CLI...${NC}\n"
 
-# 1. Check Go installation
-if ! command -v go &> /dev/null; then
-    echo -e "${RED}❌ Go is not installed. Please install Go from https://golang.org/dl/${NC}"
+# 1. SETUP DIRECTORY STRUCTURE
+printf "${BLUE}📁 Initializing Mayo environment...${NC}\n"
+mkdir -p "$MAYODIR"
+mkdir -p "$MAYODIR/data"
+mkdir -p "$MAYODIR/sessions"
+# Ensure permissions
+if [[ -d "$MAYODIR" ]]; then
+    OWNER=$(stat -f "%Su" "$MAYODIR" 2>/dev/null || stat -c "%U" "$MAYODIR" 2>/dev/null)
+    if [[ "$OWNER" == "root" ]]; then
+        sudo chown -R "$(whoami)" "$MAYODIR"
+    fi
+fi
+chmod -R 755 "$MAYODIR"
+printf "${GREEN}✅ Environment set up at $MAYODIR${NC}\n"
+
+# 2. DETECT SYSTEM
+OS_TYPE=$(uname -s | tr '[:upper:]' '[:lower:]')
+case "$OS_TYPE" in
+    darwin*)  OS="darwin" ;;
+    linux*)   OS="linux" ;;
+    msys*|cygwin*|mingw*) OS="windows" ;;
+    *)        printf "${RED}❌ Unsupported OS: $OS_TYPE${NC}\n"; exit 1 ;;
+esac
+
+ARCH_TYPE=$(uname -m)
+case "$ARCH_TYPE" in
+    x86_64) ARCH="amd64" ;;
+    arm64|aarch64) ARCH="arm64" ;;
+    *)      printf "${RED}❌ Unsupported architecture: $ARCH_TYPE${NC}\n"; exit 1 ;;
+esac
+
+if [ "$OS" = "windows" ]; then
+    BINARY_NAME="mayo.exe"
+fi
+
+printf "${BLUE}🔍 Detected System: $OS ($ARCH)${NC}\n"
+
+# 3. GET LATEST RELEASE
+printf "${BLUE}📡 Fetching latest version info...${NC}\n"
+LATEST_RELEASE=$(curl -s https://api.github.com/repos/$REPO/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+
+if [ -z "$LATEST_RELEASE" ]; then
+    # Fallback to a default or check if we can get it from another way
+    # For now, if it fails, try a fixed version or exit
+    printf "${RED}❌ Could not determine latest version from GitHub API.${NC}\n"
     exit 1
 fi
 
-# 2. Build the application
-echo -e "${YELLOW}🔨 Building binary...${NC}"
-mkdir -p bin
-go build -o bin/mayo main.go
+printf "${GREEN}✨ Latest version: $LATEST_RELEASE${NC}\n"
 
-# 3. Define installation directory
-GOPATH_BIN=$(go env GOPATH)/bin
-mkdir -p "$GOPATH_BIN"
-
-# 4. Copy binary
-echo -e "${YELLOW}🚀 Installing to $GOPATH_BIN...${NC}"
-cp bin/mayo "$GOPATH_BIN/mayo"
-chmod +x "$GOPATH_BIN/mayo"
-
-# 5. Handle configuration folders
-CONFIG_DIR="$HOME/.mayo-cli"
-mkdir -p "$CONFIG_DIR/sessions"
-mkdir -p "$CONFIG_DIR/data"
-
-# 6. Path Verification
-if [[ ":$PATH:" == *":$GOPATH_BIN:"* ]]; then
-    echo -e "${GREEN}✅ Installation successful!${NC}"
-    echo -e "You can now run ${BLUE}mayo${NC} from anywhere."
-else
-    echo -e "${YELLOW}⚠️  Installation complete, but $GOPATH_BIN is not in your PATH.${NC}"
-    
-    # Detect shell
-    SHELL_PROFILE=""
-    if [[ "$SHELL" == */zsh ]]; then
-        SHELL_PROFILE="$HOME/.zshrc"
-    elif [[ "$SHELL" == */bash ]]; then
-        SHELL_PROFILE="$HOME/.bashrc"
-        if [[ "$OSTYPE" == "darwin"* ]]; then
-            SHELL_PROFILE="$HOME/.bash_profile"
-        fi
-    fi
-
-    if [ -n "$SHELL_PROFILE" ]; then
-        echo -e "To fix this, run the following command:"
-        echo -e "${BLUE}echo 'export PATH=\"\$PATH:$GOPATH_BIN\"' >> $SHELL_PROFILE && source $SHELL_PROFILE${NC}"
-        
-        # Automatic fix attempt
-        read -p "Do you want me to add this to your $SHELL_PROFILE automatically? (y/n) " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            echo "export PATH=\"\$PATH:$GOPATH_BIN\"" >> "$SHELL_PROFILE"
-            echo -e "${GREEN}✅ Added to $SHELL_PROFILE. Please restart your terminal or run: source $SHELL_PROFILE${NC}"
-        fi
-    fi
+# 4. DOWNLOAD BINARY
+DOWNLOAD_URL="https://github.com/$REPO/releases/download/$LATEST_RELEASE/mayo-$OS-$ARCH"
+if [ "$OS" = "windows" ]; then
+    DOWNLOAD_URL="${DOWNLOAD_URL}.exe"
 fi
+
+TMP_DIR=$(mktemp -d)
+TMP_BINARY="$TMP_DIR/$BINARY_NAME"
+
+printf "${BLUE}📥 Downloading $BINARY_NAME from GitHub...${NC}\n"
+if ! curl -L -o "$TMP_BINARY" "$DOWNLOAD_URL"; then
+    printf "${RED}❌ Download failed. The binary for $OS ($ARCH) might not be released yet.${NC}\n"
+    exit 1
+fi
+
+chmod +x "$TMP_BINARY"
+
+# 5. INSTALL
+printf "${BLUE}📦 Moving binary to $INSTALL_DIR...${NC}\n"
+if [ "$OS" != "windows" ]; then
+    if [ -w "$INSTALL_DIR" ]; then
+        mv "$TMP_BINARY" "$INSTALL_DIR/$BINARY_NAME"
+    else
+        printf "${BLUE}🔑 Root password required for installation to $INSTALL_DIR${NC}\n"
+        sudo mv "$TMP_BINARY" "$INSTALL_DIR/$BINARY_NAME"
+    fi
+else
+    # Better path for windows? Usually ~/bin or something in PATH
+    mv "$TMP_BINARY" "$INSTALL_DIR/$BINARY_NAME"
+fi
+
+rm -rf "$TMP_DIR"
+
+printf "\n${GREEN}🚀 Mayo CLI installed successfully!${NC}\n"
+printf "Run ${BLUE}$BINARY_NAME help${NC} to confirm.${NC}\n"

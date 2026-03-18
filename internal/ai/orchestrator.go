@@ -15,10 +15,13 @@ import (
 	"mayo-cli/internal/dataframe"
 	_ "github.com/mattn/go-sqlite3"
 	"mayo-cli/internal/files"
+	"mayo-cli/internal/knowledge"
 	"mayo-cli/internal/privacy"
 	"mayo-cli/internal/session"
 	"mayo-cli/internal/ui"
 	"os"
+	"github.com/blastrain/vitess-sqlparser/sqlparser"
+	"github.com/AlecAivazis/survey/v2"
 )
 
 type DBConnection struct {
@@ -44,6 +47,9 @@ type Orchestrator struct {
 	LastSQL        string     // last executed SQL
 	StagedName     string     // name of loaded/staged dataframe
 	IsDirty        bool       // true if working copy differs from saved state
+	DefaultLimit   int        // Point 1.C
+	Interactive    bool       // Point 2.B
+	AnalystEnabled bool
 }
 
 func (o *Orchestrator) ProcessQuery(ctx context.Context, userInput string) (string, error) {
@@ -85,6 +91,22 @@ func (o *Orchestrator) ProcessQuery(ctx context.Context, userInput string) (stri
 			}
 		}
 
+		// 🆕 DATAFRAME SCHEMA INTEGRATION
+		if o.StagedName != "" {
+			// Fetch fresh column list from local store
+			cols, _, err := dataframe.Load(o.StagedName)
+			if err == nil {
+				o.LastCols = cols // Sync internal state
+				dfTable := db.Table{
+					Name: "df_" + o.StagedName,
+				}
+				for _, c := range cols {
+					dfTable.Columns = append(dfTable.Columns, db.Column{Name: c, Type: "TEXT"})
+				}
+				fullSchema.Tables = append(fullSchema.Tables, dfTable)
+			}
+		}
+
 		dialect := "ansi"
 		if o.StagedName != "" {
 			dialect = "sqlite"
@@ -97,6 +119,12 @@ func (o *Orchestrator) ProcessQuery(ctx context.Context, userInput string) (stri
 		}
 
 		systemPrompt = BuildSystemPrompt(&fullSchema, history, o.UserContext, dialect)
+
+		if o.DefaultLimit > 0 {
+			systemPrompt += fmt.Sprintf("\n\nCRITICAL: By default, you MUST apply a LIMIT %d to your queries to protect against high token usage for large data loads. ONLY omit or increase the LIMIT if the user explicitly asks for 'all' or a larger number of rows.", o.DefaultLimit)
+		} else {
+			systemPrompt += "\n\nCRITICAL: There is NO default limit for queries. You MUST prioritize selecting ALL data unless the user asks for a sample."
+		}
 
 			// 2. Dataframes as Tables (THE NEW WAY)
 			if o.StagedName != "" {
@@ -114,7 +142,7 @@ func (o *Orchestrator) ProcessQuery(ctx context.Context, userInput string) (stri
 			for _, f := range o.Files {
 				tableName := db.SanitizeName(filepath.Base(f.Name))
 				tableName = regexp.MustCompile(`\.(csv|xlsx|xls|pdf)$`).ReplaceAllString(tableName, "")
-				filesNote.WriteString(fmt.Sprintf("- Original file: '%s'\n", f.Name))
+				filesNote.WriteString(fmt.Sprintf("- File: '%s' -> Table Name: '%s'\n", f.Name, tableName))
 			}
 			systemPrompt += filesNote.String()
 		}
@@ -123,11 +151,36 @@ func (o *Orchestrator) ProcessQuery(ctx context.Context, userInput string) (stri
 		systemPrompt = BuildFilesPrompt(o.Files, history, o.UserContext, nil, "sqlite")
 	}
 
+	// --- 3.C KNOWLEDGE INTEGRATION (RAG) ---
+	if o.Session != nil {
+		knowledgeTableName := "vector_" + strings.ReplaceAll(o.Session.ID, "-", "_")
+		sqlitePath := filepath.Join(config.GetConfigDir(), "data", "vectors.db")
+		if _, err := os.Stat(sqlitePath); err == nil {
+			if kb, err := sql.Open("sqlite3", sqlitePath); err == nil {
+				defer kb.Close()
+				// Use user input as search query
+				results, _ := knowledge.SearchKnowledge(kb, knowledgeTableName, userInput, 5)
+				if len(results) > 0 {
+					ui.RenderStep("📚", fmt.Sprintf("Retrieved %d relevant knowledge snippets...", len(results)))
+					kbCtx := "\n\nRELEVANT KNOWLEDGE CONTEXT (from indexed documents):\n"
+					kbCtx += strings.Join(results, "\n---\n")
+					systemPrompt += kbCtx
+				}
+			}
+		}
+	}
+
 	ui.RenderStep("🗜️", "Compressing prompt for token efficiency...")
 
 	// 1. Log user input
 	if o.Session != nil {
 		session.LogToSession(o.Session.ID, fmt.Sprintf("User: %s", userInput))
+	}
+
+	trimmedInput := strings.TrimSpace(userInput)
+	if isLikelySQL(trimmedInput) {
+		ui.RenderStep("⚡", "Direct SQL detected. Skipping AI analysis...")
+		return o.executeAndAnalyze(ctx, userInput, trimmedInput, "", "", nil)
 	}
 
 	// 2. Generate SQL from AI
@@ -212,8 +265,27 @@ func (o *Orchestrator) ProcessQuery(ctx context.Context, userInput string) (stri
 		}
 	}
 
+	return o.executeAndAnalyze(ctx, userInput, sqlQuery, aiResponse, systemPrompt, usage)
+}
+
+func (o *Orchestrator) executeAndAnalyze(ctx context.Context, userInput, sqlQuery, aiResponse, systemPrompt string, usage *TokenUsage) (string, error) {
 	// 4. Validate and Execute SQL
 	if sqlQuery != "" {
+		// --- INTERACTIVE REVIEW (Point 2.B) ---
+		if o.Interactive {
+			fmt.Println(ui.StyleTitle.Render("\n[QUERY REVIEW]"))
+			var finalSQL string
+			err := survey.AskOne(&survey.Input{
+				Message: "Review/Edit SQL:",
+				Default: sqlQuery,
+			}, &finalSQL)
+			if err != nil || strings.TrimSpace(finalSQL) == "" {
+				ui.PrintInfo("Execution cancelled.")
+				return aiResponse, nil
+			}
+			sqlQuery = strings.TrimSpace(finalSQL)
+		}
+
 		// --- SMART ROUTING ---
 		// If query targets a dataframe (prefixed with df_ or matches staged name), execute against local storage
 		isDfQuery := o.StagedName != "" && (strings.Contains(strings.ToLower(sqlQuery), "df_") || strings.Contains(strings.ToLower(sqlQuery), strings.ToLower(o.StagedName)))
@@ -237,12 +309,12 @@ func (o *Orchestrator) ProcessQuery(ctx context.Context, userInput string) (stri
 				return "", err
 			}
 
-			ui.RenderSQLStatus("Executing generated SQL query...")
+			ui.RenderSQLStatus("Executing SQL query...")
 			ui.RenderSQLQuery(sqlQuery)
 			o.LastSQL = sqlQuery
 			o.IsDirty = true // Mark that we have uncommitted data in memory
-			err = o.ExecuteAndRender(sqlQuery)
-			if err != nil {
+			err := o.ExecuteAndRender(sqlQuery)
+			if err != nil && systemPrompt != "" {
 				fmt.Printf("⚠️ Query failed, attempting self-correction...\n")
 				correctionPrompt := BuildCorrectionPrompt(err.Error(), sqlQuery)
 				correctedResponse, _, errCorr := o.AI.GenerateResponse(ctx, systemPrompt, correctionPrompt)
@@ -258,20 +330,24 @@ func (o *Orchestrator) ProcessQuery(ctx context.Context, userInput string) (stri
 						return "", fmt.Errorf("SQL error after correction: %v", err)
 					}
 				}
+			} else if err != nil {
+				return "", fmt.Errorf("SQL error: %v", err)
 			}
 		}
 	}
 
 	// 5. Detect and render charts
-	chartData := extractChartData(aiResponse)
-	if chartData != nil {
-		fmt.Println(chartData())
+	if aiResponse != "" {
+		chartData := extractChartData(aiResponse)
+		if chartData != nil {
+			fmt.Println(chartData())
+		}
 	}
 
 	// 6. --- NEW: ANALYST STAGE ---
 	finalResponse := aiResponse
 	var analysis string
-	if len(o.Connections) > 0 {
+	if len(o.Connections) > 0 && o.AnalystEnabled {
 		ui.RenderStep("🧠", "Analyzing data results for insights...")
 		var err error
 		analysis, err = o.AnalyzeResults(ctx, userInput, sqlQuery, aiResponse)
@@ -279,7 +355,11 @@ func (o *Orchestrator) ProcessQuery(ctx context.Context, userInput string) (stri
 			ui.RenderSeparator()
 			ui.PrintInfo("Analyst Insight:")
 			ui.RenderMarkdown(analysis)
-			finalResponse += "\n\n### Analyst Insight\n" + analysis
+			if finalResponse != "" {
+				finalResponse += "\n\n### Analyst Insight\n" + analysis
+			} else {
+				finalResponse = "### Analyst Insight\n" + analysis
+			}
 		}
 	}
 
@@ -307,6 +387,7 @@ func (o *Orchestrator) ProcessQuery(ctx context.Context, userInput string) (stri
 	
 	return finalResponse, nil
 }
+
 
 func (o *Orchestrator) AnalyzeResults(ctx context.Context, originalQuery, sql, aiPrompt string) (string, error) {
 	// 1. Get the actual data from the last execution (we'll need a way to capture it)
@@ -493,98 +574,172 @@ func extractJSON(text string) string {
 }
 
 func (o *Orchestrator) ExecuteCrossQuery(query string) ([]string, [][]string, error) {
-	// 1. Identify involved aliases
-	involvedAliases := []string{}
-	for alias := range o.Connections {
-		if strings.Contains(query, alias+".") {
-			involvedAliases = append(involvedAliases, alias)
+	// 1. Identify involved aliases and their tables
+	aliasTables := make(map[string][]string)
+
+	// Regex matches: alias.table, "alias"."table", [alias].[table]
+	re := regexp.MustCompile(`([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)`)
+	matches := re.FindAllStringSubmatch(query, -1)
+
+	involvedAliases := make(map[string]bool)
+	for _, m := range matches {
+		alias := m[1]
+		table := m[2]
+		if _, ok := o.Connections[alias]; ok {
+			involvedAliases[alias] = true
+			found := false
+			for _, t := range aliasTables[alias] {
+				if t == table {
+					found = true
+					break
+				}
+			}
+			if !found {
+				aliasTables[alias] = append(aliasTables[alias], table)
+			}
 		}
 	}
 
-	// 2. If no aliases or only one, try standard routing
+	// 2. If no aliases or only one source is referenced, try direct execution
 	if len(involvedAliases) <= 1 {
-		// Just try logic similar to ExecuteAndRender but return data
-		for alias, conn := range o.Connections {
+		for alias := range involvedAliases {
+			conn := o.Connections[alias]
 			cleanQuery := query
-			if len(involvedAliases) == 1 && involvedAliases[0] == alias {
-				pattern := fmt.Sprintf(`(?i)%s\.`, regexp.QuoteMeta(alias))
-				cleanQuery = regexp.MustCompile(pattern).ReplaceAllString(query, "")
-			}
-			
-			rows, err := conn.DB.Query(cleanQuery)
+			// Strip alias if it was used in the query
+			pattern := fmt.Sprintf(`(?i)%s\.`, regexp.QuoteMeta(alias))
+			cleanQuery = regexp.MustCompile(pattern).ReplaceAllString(query, "")
+			return o.executeOnConnection(conn, cleanQuery)
+		}
+
+		// Fallback for queries without explicit aliases: try active connections
+		for _, conn := range o.Connections {
+			cols, data, err := o.executeOnConnection(conn, query)
 			if err == nil {
-				defer rows.Close()
-				cols, _ := rows.Columns()
-				var data [][]string
-				for rows.Next() {
-					vals := make([]interface{}, len(cols))
-					ptr := make([]interface{}, len(cols))
-					for i := range vals { ptr[i] = &vals[i] }
-					rows.Scan(ptr...)
-					row := make([]string, len(cols))
-					for i, v := range vals { row[i] = fmt.Sprintf("%v", v) }
-					data = append(data, row)
-				}
 				return cols, data, nil
 			}
 		}
+
 		// Try dataframe engine as last resort
 		return dataframe.Query(query)
 	}
 
-	// 3. Multi-source join logic (Supported for SQLite only for now)
-	isAllSQLite := true
-	for _, alias := range involvedAliases {
-		if o.Connections[alias].Driver != "sqlite" {
-			isAllSQLite = false
-			break
-		}
+	// 3. MULTI-SOURCE JOIN (The "Bridge" Feature - ROADMAP Point 3.A)
+	ui.RenderStep("🔗", fmt.Sprintf("Activating Bridge: Joining %d data sources...", len(involvedAliases)))
+
+	// Create an in-memory master DB for the join
+	masterDB, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		return nil, nil, err
 	}
+	defer masterDB.Close()
 
-	if isAllSQLite {
-		ui.RenderStep("🔗", "Performing cross-source SQLite join...")
-		// Use an in-memory DB or the dataframes.db as master
-		masterDB, err := sql.Open("sqlite3", ":memory:")
-		if err != nil {
-			return nil, nil, err
-		}
-		defer masterDB.Close()
+	updatedQuery := query
 
-		for _, alias := range involvedAliases {
-			attachSQL := fmt.Sprintf("ATTACH DATABASE '%s' AS %s", o.Connections[alias].DSN, alias)
+	for alias := range involvedAliases {
+		conn := o.Connections[alias]
+
+		if conn.Driver == "sqlite" {
+			ui.RenderStep("📎", fmt.Sprintf("Attaching local source '%s'...", alias))
+			// Absolute path is needed for ATTACH
+			absPath, _ := filepath.Abs(conn.DSN)
+			attachSQL := fmt.Sprintf("ATTACH DATABASE '%s' AS %s", absPath, alias)
 			if _, err := masterDB.Exec(attachSQL); err != nil {
 				return nil, nil, fmt.Errorf("failed to attach %s: %v", alias, err)
 			}
-		}
+		} else {
+			// External source (Postgres, MySQL, etc)
+			for _, table := range aliasTables[alias] {
+				ui.RenderStep("📥", fmt.Sprintf("Bridging '%s.%s' from %s...", alias, table, conn.Driver))
 
-		rows, err := masterDB.Query(query)
-		if err != nil {
-			return nil, nil, err
+				// Fetch data with safety limit
+				fetchSQL := fmt.Sprintf("SELECT * FROM %s", table)
+				if o.DefaultLimit > 0 {
+					fetchSQL += fmt.Sprintf(" LIMIT %d", o.DefaultLimit)
+				}
+
+				rows, err := conn.DB.Query(fetchSQL)
+				if err != nil {
+					return nil, nil, fmt.Errorf("failed to fetch from %s.%s: %v", alias, table, err)
+				}
+				defer rows.Close()
+
+				// Import into master SQLite as "alias_table"
+				tempTableName := fmt.Sprintf("%s_%s", alias, table)
+				if err := db.ImportRowsToSQLite(masterDB, tempTableName, rows); err != nil {
+					return nil, nil, fmt.Errorf("bridge import failed for %s.%s: %v", alias, table, err)
+				}
+
+				// Update query to reference the new local table name
+				pattern := fmt.Sprintf(`(?i)%s\.%s`, regexp.QuoteMeta(alias), regexp.QuoteMeta(table))
+				updatedQuery = regexp.MustCompile(pattern).ReplaceAllString(updatedQuery, tempTableName)
+			}
 		}
-		defer rows.Close()
-		cols, _ := rows.Columns()
-		var data [][]string
-		for rows.Next() {
-			vals := make([]interface{}, len(cols))
-			ptr := make([]interface{}, len(cols))
-			for i := range vals { ptr[i] = &vals[i] }
-			rows.Scan(ptr...)
-			row := make([]string, len(cols))
-			for i, v := range vals { row[i] = fmt.Sprintf("%v", v) }
-			data = append(data, row)
-		}
-		return cols, data, nil
 	}
 
-	return nil, nil, fmt.Errorf("cross-source joins are currently only supported for SQLite (imported files)")
+	if ui.DebugEnabled {
+		ui.RenderDebug("BRIDGE QUERY", updatedQuery)
+	}
+
+	return o.executeOnDB(masterDB, updatedQuery)
+}
+
+func (o *Orchestrator) executeOnConnection(conn *DBConnection, query string) ([]string, [][]string, error) {
+	return o.executeOnDB(conn.DB, query)
+}
+
+func (o *Orchestrator) executeOnDB(db *sql.DB, query string) ([]string, [][]string, error) {
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+
+	cols, _ := rows.Columns()
+	var data [][]string
+	for rows.Next() {
+		vals := make([]interface{}, len(cols))
+		ptr := make([]interface{}, len(cols))
+		for i := range vals {
+			ptr[i] = &vals[i]
+		}
+		if err := rows.Scan(ptr...); err != nil {
+			return nil, nil, err
+		}
+		row := make([]string, len(cols))
+		for i, v := range vals {
+			if v == nil {
+				row[i] = ""
+			} else {
+				row[i] = fmt.Sprintf("%v", v)
+			}
+		}
+		data = append(data, row)
+	}
+	return cols, data, nil
 }
 
 func validateReadOnly(query string) error {
+	// Attempt formal parsing (Point 1.A)
+	stmt, err := sqlparser.Parse(query)
+	if err != nil {
+		// Fallback for dialect-specific queries or complex joins that the parser doesn't understand
+		return basicSecurityCheck(query)
+	}
+
+	switch stmt.(type) {
+	case *sqlparser.Select, *sqlparser.Show, *sqlparser.OtherRead:
+		return nil
+	default:
+		return fmt.Errorf("security violation: non-read-only operation detected. Mayo is restricted to READ-ONLY mode")
+	}
+}
+
+func basicSecurityCheck(query string) error {
 	forbidden := []string{"INSERT", "UPDATE", "DELETE", "DROP", "TRUNCATE", "ALTER", "CREATE", "REPLACE", "GRANT", "REVOKE"}
 	for _, word := range forbidden {
 		re := regexp.MustCompile(`(?i)\b` + word + `\b`)
 		if re.MatchString(query) {
-			return fmt.Errorf("security violation: non-read-only operation '%s' detected. Mayo is restricted to READ-ONLY mode", word)
+			return fmt.Errorf("security violation: potentially destructive operation '%s' detected. Mayo is restricted to READ-ONLY mode", word)
 		}
 	}
 	return nil
@@ -637,19 +792,51 @@ func (o *Orchestrator) SyncSchema(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		conn.Schema = schema
 		
-		// Save to session directory if active
-		if o.Session != nil {
-			sessionDir := filepath.Join(config.GetConfigDir(), "sessions", o.Session.ID)
-			os.MkdirAll(sessionDir, 0755)
-			metadataPath := filepath.Join(sessionDir, fmt.Sprintf("metadata_%s.md", alias))
-			md := db.ExportSchemaToMarkdown(schema)
-			os.WriteFile(metadataPath, []byte(md), 0644)
-			ui.PrintSuccess(fmt.Sprintf("Metadata for '%s' saved to session file: %s", alias, metadataPath))
+		// If we already have descriptions (from LoadMetadata), preserve them
+		if conn.Schema != nil {
+			for _, oldTbl := range conn.Schema.Tables {
+				for i := range schema.Tables {
+					if schema.Tables[i].Name == oldTbl.Name {
+						schema.Tables[i].Description = oldTbl.Description
+						// Preserve column descriptions too
+						for _, oldCol := range oldTbl.Columns {
+							for j := range schema.Tables[i].Columns {
+								if schema.Tables[i].Columns[j].Name == oldCol.Name {
+									schema.Tables[i].Columns[j].Description = oldCol.Description
+								}
+							}
+						}
+					}
+				}
+			}
 		}
+
+		conn.Schema = schema
+		o.SaveMetadata(alias)
 	}
 	return nil
+}
+
+func (o *Orchestrator) SaveMetadata(alias string) error {
+	if o.Session == nil {
+		return nil
+	}
+	conn, ok := o.Connections[alias]
+	if !ok || conn.Schema == nil {
+		return nil
+	}
+
+	sessionDir := filepath.Join(config.GetConfigDir(), "sessions", o.Session.ID)
+	os.MkdirAll(sessionDir, 0755)
+	metadataPath := filepath.Join(sessionDir, fmt.Sprintf("metadata_%s.md", alias))
+
+	md := db.ExportSchemaToMarkdown(conn.Schema)
+	err := os.WriteFile(metadataPath, []byte(md), 0644)
+	if err == nil {
+		ui.PrintSuccess(fmt.Sprintf("Metadata for '%s' synchronized to: %s", alias, metadataPath))
+	}
+	return err
 }
 
 func (o *Orchestrator) LoadMetadata(alias string) {
@@ -671,6 +858,14 @@ func (o *Orchestrator) LoadMetadata(alias string) {
 						for i := range conn.Schema.Tables {
 							if conn.Schema.Tables[i].Name == parsedTbl.Name {
 								conn.Schema.Tables[i].Description = parsedTbl.Description
+								// Merge column descriptions
+								for _, parsedCol := range parsedTbl.Columns {
+									for j := range conn.Schema.Tables[i].Columns {
+										if conn.Schema.Tables[i].Columns[j].Name == parsedCol.Name {
+											conn.Schema.Tables[i].Columns[j].Description = parsedCol.Description
+										}
+									}
+								}
 							}
 						}
 					}
@@ -741,4 +936,31 @@ TASK:
 	}
 
 	return "", fmt.Errorf("target '%s' not found. Use a connection alias or 'df'", target)
+}
+
+func isLikelySQL(input string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(input))
+	// Basic keywords that start a direct query
+	keywords := []string{"SELECT", "WITH", "SHOW", "DESCRIBE", "EXPLAIN", "PRAGMA"}
+	
+	isKeywordStart := false
+	var matchedKey string
+	for _, k := range keywords {
+		if strings.HasPrefix(upper, k+" ") || upper == k {
+			isKeywordStart = true
+			matchedKey = k
+			break
+		}
+	}
+	
+	if !isKeywordStart {
+		return false
+	}
+
+	// Heuristic: If it's a SELECT, it should look structured (have FROM, or end with ;)
+	if matchedKey == "SELECT" {
+		return strings.Contains(upper, " FROM ") || strings.HasSuffix(upper, ";")
+	}
+
+	return true // More lenient for PRAGMA, SHOW, etc.
 }

@@ -19,6 +19,7 @@ type Column struct {
 	SampleValues  []string `json:"sample_values,omitempty"`
 	IsCategorical bool     `json:"is_categorical,omitempty"`
 	Categories    []string `json:"categories,omitempty"`
+	Description   string   `json:"description,omitempty"`
 }
 
 type Table struct {
@@ -280,8 +281,8 @@ func ExportSchemaToMarkdown(schema *Schema) string {
 		}
 		sb.WriteString("\n")
 
-		sb.WriteString("| Column | Type | Nullable | Categorical | Sample Values / Categories |\n")
-		sb.WriteString("|--------|------|----------|-------------|----------------------------|\n")
+		sb.WriteString("| Column | Type | Nullable | Categorical | Sample Values / Categories | Description |\n")
+		sb.WriteString("|--------|------|----------|-------------|----------------------------|-------------|\n")
 		for _, col := range tbl.Columns {
 			nullable := "No"
 			if col.IsNullable {
@@ -299,7 +300,7 @@ func ExportSchemaToMarkdown(schema *Schema) string {
 				valStr = "Samples: " + strings.Join(col.SampleValues, ", ")
 			}
 
-			sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s |\n", col.Name, col.Type, nullable, categorical, valStr))
+			sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | %s |\n", col.Name, col.Type, nullable, categorical, valStr, col.Description))
 		}
 		sb.WriteString("\n")
 	}
@@ -358,9 +359,44 @@ func ParseSchemaFromMarkdown(content string) (*Schema, error) {
 						col.SampleValues[k] = strings.TrimSpace(col.SampleValues[k])
 					}
 				}
+				if len(parts) >= 7 {
+					col.Description = strings.TrimSpace(parts[6])
+				}
 				currentTable.Columns = append(currentTable.Columns, col)
 			}
 		}
 	}
 	return schema, nil
+}
+
+func EnsureColumn(ctx context.Context, dbConn *sql.DB, tableName, colName, colType string) error {
+	// Check if column exists
+	query := fmt.Sprintf("PRAGMA table_info(%s)", tableName)
+	rows, err := dbConn.QueryContext(ctx, query)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	exists := false
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt interface{}
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			continue
+		}
+		if strings.EqualFold(name, colName) {
+			exists = true
+			break
+		}
+	}
+
+	if !exists {
+		alterSQL := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", tableName, colName, colType)
+		_, err = dbConn.ExecContext(ctx, alterSQL)
+		return err
+	}
+	return nil
 }

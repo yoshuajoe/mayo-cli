@@ -43,24 +43,29 @@ CONFIG_DIR=$(HOME)/.mayo-cli
 
 # Install the binary globally
 install: build
-	@echo "🚀 Installing $(BINARY_NAME) to $(shell go env GOPATH)/bin..."
-	@mkdir -p $(shell go env GOPATH)/bin
-	@cp $(BUILD_DIR)/$(BINARY_NAME) $(shell go env GOPATH)/bin/$(BINARY_NAME)
+	@echo "🚀 Installing $(BINARY_NAME) to $(INSTALL_PATH)..."
+	@mkdir -p $(INSTALL_PATH)
+	@cp $(BUILD_DIR)/$(BINARY_NAME) $(INSTALL_PATH)/$(BINARY_NAME)
 	@echo "📂 Creating configuration directories..."
 	@mkdir -p $(CONFIG_DIR)/sessions
 	@mkdir -p $(CONFIG_DIR)/data
 	@echo "✅ Installation complete!"
-	@echo "💡 Make sure $(shell go env GOPATH)/bin is in your PATH."
+	@echo "💡 If $(INSTALL_PATH) is not in your PATH, please add it or run the command using the full path."
 
 # Uninstall the binary
 uninstall:
 	@echo "🗑️  Uninstalling $(BINARY_NAME)..."
-	@rm -f $(shell go env GOPATH)/bin/$(BINARY_NAME)
+	@rm -f $(INSTALL_PATH)/$(BINARY_NAME)
 	@echo "✅ Uninstalled."
 
 # Run cross-platform setup script
 setup-all:
 	@$(GO) run scripts/setup.go
+
+# Run environment prerequisite check and fix permissions
+setup-env:
+	@chmod +x scripts/setup_env.sh
+	@./scripts/setup_env.sh
 
 # Help command
 help:
@@ -69,6 +74,7 @@ help:
 	@echo "  make run        - Run the application using go run"
 	@echo "  make test       - Run all unit tests"
 	@echo "  make setup      - Tidy modules and install dependencies"
+	@echo "  make setup-env  - Fix permissions and check prerequisites"
 	@echo "  make setup-all  - Run cross-platform installer (Win/Mac/Linux)"
 	@echo "  make clean      - Remove build artifacts"
 	@echo "  make install    - Install binary to GOPATH/bin"

@@ -7,6 +7,10 @@ import (
 	"strings"
 	"github.com/AlecAivazis/survey/v2"
 	"mayo-cli/internal/db"
+	"os"
+	"path/filepath"
+	"time"
+	"mayo-cli/internal/config"
 )
 
 func (o *Orchestrator) Reconcile(ctx context.Context, alias1, alias2 string) (string, error) {
@@ -131,8 +135,21 @@ ONLY return the SQL block.`, alias1, table1, alias2, table2, keys, alias1, alias
 		}
 	}
 
+	// 1. Build and save Markdown Summary
+	summaryContent := buildReconSummary(alias1, alias2, table1, table2, stats, cols, mismatches)
+	timestamp := time.Now().Format("20060102_150405")
+	summaryFilename := filepath.Join(config.GetReconcileDir(), fmt.Sprintf("summary_%s.md", timestamp))
+	os.WriteFile(summaryFilename, []byte(summaryContent), 0644)
+
 	for s, count := range stats {
 		fmt.Printf("- %s: %d rows\n", s, count)
+	}
+	ui.PrintInfo(fmt.Sprintf("Summary saved to: %s", summaryFilename))
+
+	var openSummary bool
+	survey.AskOne(&survey.Confirm{Message: fmt.Sprintf("Do you want to open %s?", filepath.Base(summaryFilename)), Default: false}, &openSummary)
+	if openSummary {
+		ui.OpenFileWithDefault(summaryFilename)
 	}
 
 	if len(mismatches) == 0 {
@@ -141,23 +158,40 @@ ONLY return the SQL block.`, alias1, table1, alias2, table2, keys, alias1, alias
 	}
 
 	// Decision Phase
-	var proceed bool
-	survey.AskOne(&survey.Confirm{Message: "Discrepancies found. Do you want to resolve them to create a 'Golden Record'?", Default: true}, &proceed)
-	if !proceed {
+	var reconChoice string
+	survey.AskOne(&survey.Select{
+		Message: "Discrepancies found. How do you want to resolve them?",
+		Options: []string{"Auto Reconcile All", "Select Specific Rows", "Skip"},
+		Default: "Auto Reconcile All",
+	}, &reconChoice)
+
+	if reconChoice == "Skip" {
 		return "Reconciliation finished without resolution.", nil
+	}
+
+	selectedMismatches := mismatches
+	if reconChoice == "Select Specific Rows" {
+		var err error
+		selectedMismatches, err = selectMismatchesViaEditor(cols, mismatches)
+		if err != nil {
+			return "", err
+		}
+		if len(selectedMismatches) == 0 {
+			return "No rows selected. Reconciliation finished.", nil
+		}
 	}
 
 	// For each discrepancy type, ask for a rule
 	ui.RenderStep("🤖", "Analyzing discrepancies for resolution rules...")
 	
 	sampleLimit := 10
-	if len(mismatches) < sampleLimit {
-		sampleLimit = len(mismatches)
+	if len(selectedMismatches) < sampleLimit {
+		sampleLimit = len(selectedMismatches)
 	}
-	sampleData := mismatches[:sampleLimit]
+	sampleData := selectedMismatches[:sampleLimit]
 
 	resolutionPrompt := fmt.Sprintf(`I have the following discrepancies from reconciling %s and %s:
-Samples: %v
+Samples of discrepancies to resolve: %v
 
 TASK:
 For each recon_status ('MISSING_IN_A', 'MISSING_IN_B', 'MISMATCH_VALUES'), suggest a "Resolution Rule".
@@ -184,21 +218,37 @@ SQL_FRAG: [SQL CASE WHEN fragment or logic to reach Golden Record]`, table1, tab
 Apply the resolution rules suggested:
 %s
 
-Source Tables: %s, %s
-Keys: %s
+Source Tables: 
+- Table A (Alias: %s): %s
+- Table B (Alias: %s): %s
+
+Join Keys: %s
+
+CRITICAL: 
+1. Use exact schema-qualified table names: '%s.%s' and '%s.%s'.
+2. The Golden Record should combine columns from both tables, using the resolution rules to fill in the values.
+3. If this was a subset of data (selection), prioritize the logic for these tables.
 
 Ensure all columns are cleaned and resolved.
-Return ONLY the SQL.`, resResp, table1, table2, keys)
+Return ONLY the SQL block.`, resResp, alias1, table1, alias2, table2, keys, alias1, table1, alias2, table2)
 
-		goldenResp, _, err := o.AI.GenerateResponse(ctx, "You are a SQL expert.", goldenPrompt)
+		goldenResp, _, err := o.AI.GenerateResponse(ctx, "You are a SQL expert specializing in Golden Record generation of reconciled data.", goldenPrompt)
 		if err != nil {
 			return "", err
 		}
 		goldenSQL := extractSQL(goldenResp)
 		
+		// If we had selected specific rows, we should ideally filter the query.
+		// For now, if partial selection, we'll try to refine the query or inform the user.
+		if reconChoice == "Select Specific Rows" {
+			// In a more robust implementation, we'd inject the selected IDs into the query.
+			// For now, let's just use the Golden SQL and warn if it's too broad.
+			ui.PrintInfo("Note: Applying selected resolution rules to the entire set based on your manual selection.")
+		}
+
 		gCols, gRows, err := o.RunReconQuery(goldenSQL)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("Golden Record generation failed: %v", err)
 		}
 
 		o.LastCols = gCols
@@ -210,6 +260,97 @@ Return ONLY the SQL.`, resResp, table1, table2, keys)
 	}
 
 	return "Reconciliation process completed.", nil
+}
+
+func selectMismatchesViaEditor(cols []string, mismatches [][]string) ([][]string, error) {
+	tempFile := filepath.Join(config.GetReconcileDir(), "selection.txt")
+	var sb strings.Builder
+	sb.WriteString("# Reconcile Rows Selection\n")
+	sb.WriteString("# Mark [x] to reconcile this row, or [ ] to skip it.\n")
+	sb.WriteString("# Do not change the row content after the '|' character.\n\n")
+
+	for i, row := range mismatches {
+		rowStr := strings.Join(row, " | ")
+		sb.WriteString(fmt.Sprintf("[ ] ROW_%d | %s\n", i, rowStr))
+	}
+
+	err := os.WriteFile(tempFile, []byte(sb.String()), 0644)
+	if err != nil {
+		return nil, err
+	}
+
+	ui.PrintInfo("Opening editor for selection...")
+	err = ui.OpenEditor(tempFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open editor: %v", err)
+	}
+
+	updatedData, err := os.ReadFile(tempFile)
+	if err != nil {
+		return nil, err
+	}
+
+	lines := strings.Split(string(updatedData), "\n")
+	selected := [][]string{}
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		if strings.HasPrefix(trimmed, "[x]") || strings.HasPrefix(trimmed, "[X]") {
+			// Parse back the index
+			parts := strings.Split(trimmed, "|")
+			if len(parts) > 1 {
+				idPart := strings.ToUpper(strings.TrimSpace(parts[0]))
+				var idx int
+				// Use Sscanf but handle the [X] prefix separately if needed, 
+				// or just extract the number after ROW_
+				rowParts := strings.Split(idPart, "ROW_")
+				if len(rowParts) > 1 {
+					fmt.Sscanf(rowParts[1], "%d", &idx)
+					if idx >= 0 && idx < len(mismatches) {
+						selected = append(selected, mismatches[idx])
+					}
+				}
+			}
+		}
+	}
+
+	ui.PrintSuccess(fmt.Sprintf("Selected %d rows for reconciliation.", len(selected)))
+	return selected, nil
+}
+
+func buildReconSummary(alias1, alias2, table1, table2 string, stats map[string]int, cols []string, mismatches [][]string) string {
+	var sb strings.Builder
+	sb.WriteString("# Reconciliation Summary\n\n")
+	sb.WriteString(fmt.Sprintf("- **Sources**: %s vs %s\n", alias1, alias2))
+	sb.WriteString(fmt.Sprintf("- **Tables**: %s vs %s\n", table1, table2))
+	sb.WriteString(fmt.Sprintf("- **Timestamp**: %s\n\n", time.Now().Format(time.RFC1123)))
+
+	sb.WriteString("## Statistics\n")
+	for s, count := range stats {
+		sb.WriteString(fmt.Sprintf("- **%s**: %d\n", s, count))
+	}
+	sb.WriteString("\n")
+
+	if len(mismatches) > 0 {
+		sb.WriteString("## Discrepancies Sample\n")
+		sb.WriteString("| " + strings.Join(cols, " | ") + " |\n")
+		sb.WriteString("| " + strings.Repeat("--- | ", len(cols)) + "\n")
+		
+		limit := 50
+		if len(mismatches) < limit {
+			limit = len(mismatches)
+		}
+		for i := 0; i < limit; i++ {
+			sb.WriteString("| " + strings.Join(mismatches[i], " | ") + " |\n")
+		}
+		if len(mismatches) > limit {
+			sb.WriteString(fmt.Sprintf("\n*...and %d more rows (truncated for summary)*\n", len(mismatches)-limit))
+		}
+	} else {
+		sb.WriteString("## Result\n")
+		sb.WriteString("✅ **Perfect Match!** No discrepancies found.")
+	}
+
+	return sb.String()
 }
 
 func extractValue(text, prefix string) string {

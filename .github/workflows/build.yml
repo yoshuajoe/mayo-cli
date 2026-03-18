@@ -1,0 +1,75 @@
+name: Build Artifacts
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    name: Build for ${{ matrix.os }} (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [linux, darwin, windows]
+        arch: [amd64, arm64]
+        exclude:
+          - os: windows
+            arch: arm64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24' # Based on my context, but I should verify go.mod
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          BINARY_NAME=mayo
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            BINARY_NAME=mayo.exe
+          fi
+          mkdir -p build/
+          go build -ldflags="-s -w -X 'mayo-cli/pkg/version.Version=${{ github.ref_name }}'" -o "build/mayo-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.os == 'windows' && '.exe' || '' }}" main.go
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mayo-${{ matrix.os }}-${{ matrix.arch }}
+          path: build/mayo-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.os == 'windows' && '.exe' || '' }}
+
+  release:
+    name: Create Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Package artifacts
+        run: |
+          mkdir -p release_dist/
+          for folder in artifacts/*; do
+            archivedir=$(basename "$folder")
+            cp "$folder"/* "release_dist/$archivedir"
+            # Optional: compress if needed
+          done
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release_dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

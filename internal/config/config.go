@@ -4,9 +4,16 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/spf13/viper"
+	"github.com/zalando/go-keyring"
+	"gopkg.in/yaml.v3"
+)
+
+const (
+	KeyringService = "mayo-cli"
 )
 
 type AIProfile struct {
@@ -22,6 +29,46 @@ type DSProfile struct {
 	DSN    string `json:"dsn"`
 }
 
+func (p *AIProfile) GetAPIKey(useKeyring bool) string {
+	if !useKeyring || p.APIKey != "[KEYRING]" {
+		return p.APIKey
+	}
+	val, err := keyring.Get(KeyringService, p.Name)
+	if err != nil {
+		return ""
+	}
+	return val
+}
+
+func (p *AIProfile) SetAPIKey(key string, useKeyring bool) error {
+	if !useKeyring {
+		p.APIKey = key
+		return nil
+	}
+	p.APIKey = "[KEYRING]"
+	return keyring.Set(KeyringService, p.Name, key)
+}
+
+func (c *Config) GetTeleskopAPIKey() string {
+	if !c.UseKeyring || c.TeleskopAPIKey != "[KEYRING]" {
+		return c.TeleskopAPIKey
+	}
+	val, err := keyring.Get(KeyringService, "teleskop_id")
+	if err != nil {
+		return ""
+	}
+	return val
+}
+
+func (c *Config) SetTeleskopAPIKey(key string) error {
+	if !c.UseKeyring {
+		c.TeleskopAPIKey = key
+		return nil
+	}
+	c.TeleskopAPIKey = "[KEYRING]"
+	return keyring.Set(KeyringService, "teleskop_id", key)
+}
+
 type Config struct {
 	AIProfiles      []AIProfile `json:"ai_profiles"`
 	DSProfiles      []DSProfile `json:"ds_profiles"`
@@ -29,6 +76,11 @@ type Config struct {
 	ActiveDSProfile string      `json:"active_ds_profile"`
 	UserContext     string      `json:"user_context"`
 	PrivacyMode     bool        `json:"privacy_mode"`
+	DefaultLimit    int         `json:"default_limit"` // Point 1.C
+	UseKeyring      bool        `json:"use_keyring"`   // Point 1.B
+	Interactive     bool        `json:"interactive"`   // Point 2.B
+	TeleskopAPIKey  string      `json:"teleskop_api_key,omitempty"`
+	AnalystEnabled  bool        `json:"analyst_enabled"`
 }
 
 func GetConfigDir() string {
@@ -41,7 +93,11 @@ func GetConfigPath() string {
 }
 
 func GetModelsPath() string {
-	return filepath.Join(GetConfigDir(), "models.txt")
+	return filepath.Join(GetConfigDir(), "models.yaml")
+}
+
+func GetReconcileDir() string {
+	return filepath.Join(GetConfigDir(), "reconcile")
 }
 
 func InitConfig() error {
@@ -66,13 +122,20 @@ func InitConfig() error {
 		}
 	}
 
+	reconDir := GetReconcileDir()
+	if _, err := os.Stat(reconDir); os.IsNotExist(err) {
+		if err := os.MkdirAll(reconDir, 0755); err != nil {
+			return err
+		}
+	}
+
 	viper.SetConfigFile(GetConfigPath())
 	viper.SetConfigType("json")
 
 	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			// If file exists but is empty or invalid, create a default one
-			SaveConfig(&Config{PrivacyMode: true})
+			SaveConfig(&Config{PrivacyMode: true, AnalystEnabled: true})
 		}
 	} else {
 		// Ensure PrivacyMode is initialized to true even for old configs
@@ -80,22 +143,59 @@ func InitConfig() error {
 			viper.Set("privacy_mode", true)
 			viper.WriteConfig()
 		}
+		if !viper.IsSet("analyst_enabled") {
+			viper.Set("analyst_enabled", true)
+			viper.WriteConfig()
+		}
 	}
 
 	// Seed default models if doesn't exist
 	modelsPath := GetModelsPath()
 	if _, err := os.Stat(modelsPath); os.IsNotExist(err) {
-		defaultModels := []string{
-			"gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash-exp",
-			"gpt-4o", "gpt-4o-mini",
-			"llama-3.3-70b-versatile", "llama-3.1-8b-instant", "qwen-2.5-32b", "deepseek-v3",
-			"claude-3-5-sonnet-20241022", "claude-3-opus-20240229", "claude-3-haiku-20240307",
-		}
-		var content strings.Builder
-		for _, m := range defaultModels {
-			content.WriteString(m + "\n")
-		}
-		os.WriteFile(modelsPath, []byte(content.String()), 0644)
+		defaultModels := `gemini:
+  - gemini-2.5-pro
+  - gemini-2.5-flash
+  - gemini-2.5-flash-lite
+  - gemini-3-pro-preview
+  - gemini-3-flash-preview
+
+openai:
+  - gpt-5.4
+  - gpt-5.4-mini
+  - gpt-5.4-nano
+  - gpt-4o
+  - gpt-4o-mini
+  - o3
+  - o3-mini
+  - o4-mini
+
+groq:
+  - llama-3.3-70b-versatile
+  - llama-3.1-70b
+  - llama-3.1-8b-instant
+  - mixtral-8x7b
+  - gemma-2-9b
+
+deepseek:
+  - deepseek-r1
+  - deepseek-v3
+  - deepseek-coder
+
+qwen:
+  - qwen-2.5-32b
+  - qwen-2.5-72b
+
+mistral:
+  - mistral-nemo-12b
+
+olmo:
+  - olmo-2
+
+anthropic:
+  - claude-3-5-sonnet
+  - claude-3-opus
+  - claude-3-haiku`
+		os.WriteFile(modelsPath, []byte(defaultModels), 0644)
 	}
 
 	return nil
@@ -121,21 +221,56 @@ func LoadConfig() (*Config, error) {
 	return &cfg, nil
 }
 
-func GetModelList() []string {
+func GetProviderList() []string {
 	path := GetModelsPath()
 	data, err := os.ReadFile(path)
 	if err != nil {
-		// Fallback to hardcoded defaults if file missing
-		return []string{"gemini-1.5-flash", "gpt-4o", "llama-3.3-70b-versatile"}
+		return []string{"gemini", "openai", "groq", "anthropic"}
 	}
 
-	var models []string
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
-		m := strings.TrimSpace(line)
-		if m != "" && !strings.HasPrefix(m, "#") {
-			models = append(models, m)
+	var mData map[string][]string
+	if err := yaml.Unmarshal(data, &mData); err != nil {
+		return []string{"gemini", "openai", "groq", "anthropic"}
+	}
+
+	var providers []string
+	for k := range mData {
+		providers = append(providers, k)
+	}
+	sort.Strings(providers)
+	return providers
+}
+
+func GetModelList(provider string) []string {
+	path := GetModelsPath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		// Fallback to minimal defaults if file missing
+		switch provider {
+		case "openai":
+			return []string{"gpt-5.4", "gpt-4o"}
+		case "gemini":
+			return []string{"gemini-2.5-pro", "gemini-2.5-flash"}
+		case "groq":
+			return []string{"llama-3.3-70b-versatile"}
+		default:
+			return []string{"gemini-2.5-pro"}
 		}
 	}
-	return models
+
+	var mData map[string][]string
+	if err := yaml.Unmarshal(data, &mData); err != nil {
+		return []string{}
+	}
+
+	if models, ok := mData[provider]; ok {
+		return models
+	}
+
+	// If provider not found directly, try lowercase
+	if models, ok := mData[strings.ToLower(provider)]; ok {
+		return models
+	}
+
+	return []string{}
 }

@@ -334,3 +334,7 @@ func RenderDebugLLM(title, content string) {
 	fmt.Printf("%s\n\n", StyleDebugLLM.Bold(true).Render("══ END DEBUG ══"))
 }
 
+func ClearScreen() {
+	fmt.Print("\033[H\033[2J")
+}
+

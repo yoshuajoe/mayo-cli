@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -16,10 +17,13 @@ import (
 	"mayo-cli/internal/config"
 	"mayo-cli/internal/dataframe"
 	"mayo-cli/internal/db"
+	"mayo-cli/internal/enhancer"
+	"mayo-cli/internal/files"
 	"mayo-cli/internal/git"
 	"mayo-cli/internal/knowledge"
 	"mayo-cli/internal/privacy"
 	"mayo-cli/internal/session"
+	"mayo-cli/internal/teleskop"
 	"mayo-cli/internal/ui"
 	"mayo-cli/pkg/version"
 
@@ -43,6 +47,8 @@ var rootCmd = &cobra.Command{
 	},
 }
 
+var quietChangelog bool
+
 var releaseNotesCmd = &cobra.Command{
 	Use:   "release-notes [version]",
 	Short: "Generate AI-powered changelog from git commits",
@@ -54,40 +60,64 @@ var releaseNotesCmd = &cobra.Command{
 		}
 
 		cfg, err := config.LoadConfig()
-		if err != nil {
-			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
-		}
+		// It's okay if config loading fails in CI/CD as we check env vars during InitAIClient
 		InitAIClient(cfg)
+
 		if GlobalAI == nil {
-			fmt.Println("AI not configured. Run /setup first.")
+			fmt.Println("AI not configured. Set MAYO_AI_KEY/PROVIDER env vars or run /setup.")
 			os.Exit(1)
 		}
 
-		fmt.Println("Fetching git commits...")
+		if !quietChangelog {
+			fmt.Println("Fetching git commits...")
+		}
 		commits, err := git.GetCommitsSinceLastTag()
 		if err != nil {
 			fmt.Printf("Git error: %v\n", err)
 			os.Exit(1)
 		}
 
-		fmt.Println("Generating AI changelog...")
+		if !quietChangelog {
+			fmt.Println("Generating AI changelog...")
+		}
 		md, err := ai.GenerateChangelogFromCommits(context.Background(), GlobalAI, commits, ver)
 		if err != nil {
 			fmt.Printf("AI error: %v\n", err)
 			os.Exit(1)
 		}
 
-		fmt.Println("\n--- GENERATED CHANGELOG ---")
-		fmt.Println(md)
-		fmt.Println("---------------------------")
-		
-		// Optionally save it if in a specific workflow (we'll let the user pipe it or handle in script)
+		if quietChangelog {
+			fmt.Println(md)
+		} else {
+			fmt.Println("\n--- GENERATED CHANGELOG ---")
+			fmt.Println(md)
+			fmt.Println("---------------------------")
+		}
 	},
 }
 
 func init() {
+	releaseNotesCmd.Flags().BoolVarP(&quietChangelog, "quiet", "q", false, "Output only the raw markdown")
 	rootCmd.AddCommand(releaseNotesCmd)
+	rootCmd.AddCommand(enhanceWorkerCmd)
+}
+
+var enhanceWorkerCmd = &cobra.Command{
+	Use:    "enhance-worker [id]",
+	Hidden: true,
+	Args:   cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		id := args[0]
+		worker, err := enhancer.NewWorker(id)
+		if err != nil {
+			fmt.Printf("Worker initialization failed: %v\n", err)
+			os.Exit(1)
+		}
+		if err := worker.Run(context.Background()); err != nil {
+			fmt.Printf("Worker error: %v\n", err)
+			os.Exit(1)
+		}
+	},
 }
 
 func StartInteractiveShell() {
@@ -131,7 +161,7 @@ func StartInteractiveShell() {
 	}
 
 	if cfg == nil || len(cfg.AIProfiles) == 0 {
-		ui.PrintInfo("No AI Profiles set. Run /setup to configure your AI provider (Gemini, OpenAI, or Groq).")
+		ui.PrintInfo("Welcome! No configuration found. Run '/wizard' for a guided onboarding or '/setup' for direct setup.")
 	} else {
 		InitAIClient(cfg)
 
@@ -206,10 +236,31 @@ func StartInteractiveShell() {
 			readline.PcItem("export"),
 			readline.PcItem("delete"),
 		),
+		readline.PcItem("/scraper",
+			readline.PcItem("spawn"),
+			readline.PcItem("list"),
+			readline.PcItem("status"),
+			readline.PcItem("logs"),
+			readline.PcItem("stop"),
+			readline.PcItem("delete"),
+			readline.PcItem("usage"),
+			readline.PcItem("summary"),
+			readline.PcItem("head"),
+			readline.PcItem("tail"),
+		),
+		readline.PcItem("/enhance",
+			readline.PcItem("start"),
+			readline.PcItem("list"),
+			readline.PcItem("status"),
+			readline.PcItem("stop"),
+			readline.PcItem("logs"),
+		),
 		readline.PcItem("/share"),
 		readline.PcItem("/this"),
 		readline.PcItem("/scan"),
 		readline.PcItem("/reconcile"),
+		readline.PcItem("/plot"),
+		readline.PcItem("/analyst"),
 		readline.PcItem("/changelog"),
 		readline.PcItem("/help"),
 		readline.PcItem("/exit"),
@@ -299,6 +350,25 @@ func StartInteractiveShell() {
 }
 
 func InitAIClient(cfg *config.Config) {
+	// 1. Check for Environment Variables (Point 1.A improvement for CI/CD)
+	envProvider := os.Getenv("MAYO_AI_PROVIDER")
+	envKey := os.Getenv("MAYO_AI_KEY")
+	envModel := os.Getenv("MAYO_AI_MODEL")
+
+	if envProvider != "" && envKey != "" {
+		GlobalAI = ai.NewClient(envProvider, envKey, envModel)
+		ui.RenderStep("🧠", fmt.Sprintf("Initializing %s (%s) from environment variables...", envProvider, envModel))
+		if GlobalAI != nil && GlobalOrchestrator != nil {
+			GlobalOrchestrator.AI = GlobalAI
+		}
+		return
+	}
+
+	// 2. Fallback to Config Profile
+	if cfg == nil || len(cfg.AIProfiles) == 0 {
+		return
+	}
+
 	var active *config.AIProfile
 	for i, p := range cfg.AIProfiles {
 		if p.Name == cfg.ActiveAIProfile {
@@ -311,26 +381,18 @@ func InitAIClient(cfg *config.Config) {
 		active = &cfg.AIProfiles[0]
 	}
 
-	if active == nil || active.Provider == "" || active.APIKey == "" {
-		ui.PrintError("AI Profile incomplete. Please run /setup.")
+	if active == nil {
+		return
+	}
+
+	apiKey := active.GetAPIKey(cfg.UseKeyring)
+	if apiKey == "" {
+		ui.PrintError("AI Profile incomplete (API Key missing). Please run /setup.")
 		return
 	}
 
 	ui.RenderStep("🧠", fmt.Sprintf("Initializing %s (%s)...", active.Provider, active.DefaultModel))
-	switch active.Provider {
-	case "openai":
-		GlobalAI = ai.NewOpenAIClient(active.APIKey, "https://api.openai.com/v1", active.DefaultModel)
-	case "groq":
-		GlobalAI = ai.NewOpenAIClient(active.APIKey, "https://api.groq.com/openai/v1", active.DefaultModel)
-	case "gemini":
-		GlobalAI, _ = ai.NewGeminiClient(active.APIKey, active.DefaultModel)
-
-	case "anthropic":
-		GlobalAI = ai.NewAnthropicClient(active.APIKey, active.DefaultModel)
-	default:
-		ui.PrintError(fmt.Sprintf("Unknown provider: %s", active.Provider))
-		return
-	}
+	GlobalAI = ai.NewClient(active.Provider, apiKey, active.DefaultModel)
 
 	if GlobalAI != nil && GlobalOrchestrator != nil {
 		GlobalOrchestrator.AI = GlobalAI
@@ -349,6 +411,35 @@ func HandleSlashCommand(input string) {
 	cmd := parts[0]
 
 	switch cmd {
+	case "/enhance":
+		if GlobalOrchestrator == nil || GlobalOrchestrator.StagedName == "" {
+			ui.PrintError("AI Data Enhancer is only available in 'Dataframe Mode'.")
+			ui.PrintInfo("Please load a dataframe first with '/df load [name]'.")
+			return
+		}
+		if len(parts) > 1 {
+			sub := parts[1]
+			args := parts[2:]
+			switch sub {
+			case "start":
+				startEnhanceCmd.ParseFlags(args)
+				HandleEnhanceStart(startEnhanceCmd, args)
+			case "list":
+				listEnhanceCmd.ParseFlags(args)
+				showAll, _ := listEnhanceCmd.Flags().GetBool("all")
+				HandleEnhanceList(showAll)
+			case "status":
+				HandleEnhanceStatus(args)
+			case "stop":
+				HandleEnhanceStop(args)
+			case "logs":
+				HandleEnhanceLogs(args)
+			default:
+				ui.PrintInfo("Usage: /enhance [start|list|status|stop|logs]")
+			}
+		} else {
+			ui.PrintInfo("Usage: /enhance [start|list|status|stop|logs]")
+		}
 	case "/export":
 		if len(parts) < 2 {
 			ui.PrintInfo("Usage: /export [filename.md]")
@@ -526,6 +617,13 @@ func HandleSlashCommand(input string) {
 			privacyStatus = "OFF (Raw Data Visible)"
 		}
 		sb.WriteString(fmt.Sprintf("- **Privacy Mode**: %s\n", privacyStatus))
+
+		keyringStatus := "DISABLED (Plaintext Config)"
+		if cfg.UseKeyring {
+			keyringStatus = "ENABLED (System Keyring)"
+		}
+		sb.WriteString(fmt.Sprintf("- **Credential Storage**: %s\n", keyringStatus))
+
 		if privacy.ActiveVault != nil {
 			sb.WriteString("- **PII Vault**: Active (AES-256-GCM)\n")
 			stats := privacy.ActiveVault.GetStats()
@@ -541,7 +639,27 @@ func HandleSlashCommand(input string) {
 			sb.WriteString("- **PII Vault**: Not initialized\n")
 		}
 
-		// 7. Debug Mode
+		// 7. User Preferences
+		sb.WriteString("\n## ⚙️ USER PREFERENCES\n")
+		limitStr := "None"
+		if cfg.DefaultLimit > 0 {
+			limitStr = fmt.Sprintf("%d rows", cfg.DefaultLimit)
+		}
+		sb.WriteString(fmt.Sprintf("- **Default SQL Limit**: %s\n", limitStr))
+
+		interactiveStr := "OFF"
+		if cfg.Interactive {
+			interactiveStr = "ON (Confirmation Required)"
+		}
+		sb.WriteString(fmt.Sprintf("- **Interactive Review**: %s\n", interactiveStr))
+
+		analystStr := "OFF (AI analysis disabled)"
+		if cfg.AnalystEnabled {
+			analystStr = "ON (AI analysis after queries)"
+		}
+		sb.WriteString(fmt.Sprintf("- **Analyst Insight**: %s\n", analystStr))
+
+		// 8. Debug Mode
 		sb.WriteString("\n## 🛠️ DEBUGGING\n")
 		debugStatus := "OFF"
 		if ui.DebugEnabled {
@@ -563,13 +681,23 @@ func HandleSlashCommand(input string) {
 			ui.PrintSuccess("Scan complete.")
 		}
 	case "/sources":
-		if GlobalOrchestrator == nil || len(GlobalOrchestrator.Connections) == 0 {
+		if GlobalOrchestrator == nil {
 			ui.PrintInfo("No sources.")
 			return
 		}
 		ui.PrintInfo("Sources:")
-		for alias, conn := range GlobalOrchestrator.Connections {
-			fmt.Printf(" - %s: %s\n", ui.StyleHighlight.Render(alias), conn.Driver)
+		
+		// 1. Teleskop.id Scraper (Always at top if configured)
+		cfg, _ := config.LoadConfig()
+		if cfg.GetTeleskopAPIKey() != "" {
+			fmt.Printf(" - %s: %s\n", ui.StyleHighlight.Render("teleskop"), "Teleskop.id Scraper")
+		}
+
+		// 2. Other connections
+		if len(GlobalOrchestrator.Connections) > 0 {
+			for alias, conn := range GlobalOrchestrator.Connections {
+				fmt.Printf(" - %s: %s\n", ui.StyleHighlight.Render(alias), conn.Driver)
+			}
 		}
 
 	case "/df":
@@ -662,14 +790,38 @@ func HandleSlashCommand(input string) {
 			if name == "" {
 				return
 			}
-			cols, rows, err := dataframe.Load(name)
+
+			var cols []string
+			var rows [][]string
+			var err error
+
+			if strings.HasPrefix(name, "scraper:") {
+				scraperID := strings.TrimPrefix(name, "scraper:")
+				cols, rows, err = teleskop.GetHead(scraperID, 1000) // Default load 1000 rows
+			} else {
+				cols, rows, err = dataframe.Load(name)
+			}
+
 			if err != nil {
 				ui.PrintError(fmt.Sprintf("Failed to load: %v", err))
 				return
 			}
 			if GlobalOrchestrator == nil {
-				ui.PrintInfo("No orchestrator active.")
-				return
+				cfg, _ := config.LoadConfig()
+				if cfg != nil {
+					GlobalOrchestrator = &ai.Orchestrator{
+						AI:             GlobalAI,
+						Connections:    make(map[string]*ai.DBConnection),
+						Session:        GlobalSess,
+						DefaultLimit:   cfg.DefaultLimit,
+						Interactive:    cfg.Interactive,
+						AnalystEnabled: cfg.AnalystEnabled,
+						Files:          []*files.FileData{},
+					}
+				} else {
+					ui.PrintInfo("No configuration found. Please run /setup first.")
+					return
+				}
 			}
 			// Inject into orchestrator as working copy
 			GlobalOrchestrator.LastCols = cols
@@ -704,7 +856,24 @@ func HandleSlashCommand(input string) {
 				len(rows), sb.String())
 
 			ui.PrintSuccess(fmt.Sprintf("Loaded dataframe '%s' into memory.", name))
-			ui.RenderTable(cols, rows)
+
+			// Show Summary instead of all data
+			fmt.Printf("\n%s\n", ui.StyleHighlight.Render("--- DATAFRAME SUMMARY ---"))
+			fmt.Printf("Records : %d rows\n", len(rows))
+			fmt.Printf("Fields  : %d columns\n", len(cols))
+			fmt.Printf("Columns : %s\n", ui.StyleHighlight.Render(strings.Join(cols, ", ")))
+
+			// Show a small sample
+			sampleSize = 5
+			if len(rows) < sampleSize {
+				sampleSize = len(rows)
+			}
+			if sampleSize > 0 {
+				fmt.Printf("\n%s (Top %d):\n", ui.StyleMuted.Render("Preview"), sampleSize)
+				ui.RenderTable(cols, rows[:sampleSize])
+			} else {
+				ui.PrintInfo("Dataframe is empty.")
+			}
 
 		case "export":
 			name := ""
@@ -725,14 +894,41 @@ func HandleSlashCommand(input string) {
 			if name == "" {
 				return
 			}
-			md, err := dataframe.ExportMarkdown(name)
+			format := "markdown"
+			if len(parts) >= 4 {
+				format = strings.ToLower(parts[3])
+			} else {
+				survey.AskOne(&survey.Select{
+					Message: "Select Export Format:",
+					Options: []string{"markdown", "csv", "excel", "json"},
+					Default: "markdown",
+				}, &format)
+			}
+
+			var filename string
+			var err error
+			switch format {
+			case "csv":
+				filename = name + ".csv"
+				err = dataframe.ExportCSV(name, filename)
+			case "excel", "xlsx":
+				filename = name + ".xlsx"
+				err = dataframe.ExportExcel(name, filename)
+			case "json":
+				filename = name + ".json"
+				err = dataframe.ExportJSON(name, filename)
+			default:
+				md, err2 := dataframe.ExportMarkdown(name)
+				if err2 == nil {
+					filename = name + ".md"
+					err = os.WriteFile(filename, []byte(md), 0644)
+				} else {
+					err = err2
+				}
+			}
+
 			if err != nil {
 				ui.PrintError(fmt.Sprintf("Export failed: %v", err))
-				return
-			}
-			filename := name + ".md"
-			if err := os.WriteFile(filename, []byte(md), 0644); err != nil {
-				ui.PrintError(fmt.Sprintf("Could not write file: %v", err))
 				return
 			}
 			ui.PrintSuccess(fmt.Sprintf("Exported to: %s", filename))
@@ -748,7 +944,7 @@ func HandleSlashCommand(input string) {
 			}
 
 		default:
-			ui.PrintInfo("Usage:\n  /df commit [name] — persist memory to SQLite\n  /df list           — list saved dataframes\n  /df load <name>    — load into memory\n  /df reset          — clear memory (back to DB mode)\n  /df status         — show working copy status\n  /df export <name>  — export as Markdown table\n  /df delete <name>  — remove dataframe")
+			ui.PrintInfo("Usage:\n  /df commit [name] — persist memory to SQLite\n  /df list           — list saved dataframes\n  /df load <name>    — load into memory\n  /df reset          — clear memory (back to DB mode)\n  /df status         — show working copy status\n  /df export [name] [format] — export as markdown/csv/excel/json\n  /df delete <name>  — remove dataframe")
 		}
 
 	case "/connect":
@@ -797,10 +993,13 @@ func HandleSlashCommand(input string) {
 			ui.PrintInfo("Usage: /reconcile <alias1> <alias2>")
 			return
 		}
+		session.LogToSession(GlobalSess.ID, fmt.Sprintf("User requested reconciliation: /reconcile %s %s", parts[1], parts[2]))
 		resp, err := GlobalOrchestrator.Reconcile(context.Background(), parts[1], parts[2])
 		if err != nil {
 			ui.PrintError(err.Error())
 		} else {
+			lastResponse = resp
+			session.LogToSession(GlobalSess.ID, fmt.Sprintf("Mayo Recon Result: %s", resp))
 			ui.RenderMarkdown(resp)
 		}
 	case "/disconnect":
@@ -878,6 +1077,81 @@ func HandleSlashCommand(input string) {
 		if GlobalOrchestrator != nil {
 			GlobalOrchestrator.UserContext = cfg.UserContext
 		}
+	case "/plot":
+		if GlobalOrchestrator == nil || len(GlobalOrchestrator.LastRows) == 0 {
+			ui.PrintInfo("No data in memory to plot. Run a query first.")
+			return
+		}
+		
+		cols := GlobalOrchestrator.LastCols
+		rows := GlobalOrchestrator.LastRows
+		
+		// Map numerical columns
+		numOptions := []string{}
+		for i, c := range cols {
+			numOptions = append(numOptions, fmt.Sprintf("%d: %s", i, c))
+		}
+		
+		var selectedNum string
+		err := survey.AskOne(&survey.Select{
+			Message: "Select Numeric Column (Y-Axis):",
+			Options: numOptions,
+		}, &selectedNum)
+		if err != nil { return }
+		
+		var numCol int
+		fmt.Sscanf(selectedNum, "%d:", &numCol)
+
+		var selectedLabel string
+		survey.AskOne(&survey.Select{
+			Message: "Select Label Column (X-Axis, e.g. Date/ID):",
+			Options: append([]string{"[None/Sequence]"}, numOptions...),
+		}, &selectedLabel)
+		
+		labelCol := -1
+		if selectedLabel != "[None/Sequence]" {
+			fmt.Sscanf(selectedLabel, "%d:", &labelCol)
+		}
+		
+		var dataPoints []float64
+		var min, max, sum float64
+		min = math.MaxFloat64
+		
+		for _, row := range rows {
+			var val float64
+			// Clean currency/percent signs if any
+			cleanVal := regexp.MustCompile(`[^0-9\.-]`).ReplaceAllString(row[numCol], "")
+			fmt.Sscanf(cleanVal, "%f", &val)
+			dataPoints = append(dataPoints, val)
+			
+			if val < min { min = val }
+			if val > max { max = val }
+			sum += val
+		}
+
+		if len(dataPoints) == 0 {
+			ui.PrintError("No numeric data points found.")
+			return
+		}
+		
+		avg := sum / float64(len(dataPoints))
+		title := fmt.Sprintf("Plot: %s", cols[numCol])
+		if labelCol != -1 {
+			title += fmt.Sprintf(" grouped by %s", cols[labelCol])
+		}
+
+		fmt.Println(ui.RenderChart(dataPoints, title))
+		
+		// Show Stats Summary
+		fmt.Printf("\n%s\n", ui.StyleHighlight.Render("📈 STATS SUMMARY"))
+		fmt.Printf("Records : %d\n", len(dataPoints))
+		fmt.Printf("Min     : %s\n", ui.StyleError.Render(fmt.Sprintf("%.2f", min)))
+		fmt.Printf("Max     : %s\n", ui.StyleSuccess.Render(fmt.Sprintf("%.2f", max)))
+		fmt.Printf("Average : %s\n", ui.StyleTitle.Render(fmt.Sprintf("%.2f", avg)))
+		
+		if labelCol != -1 && len(rows) > 0 {
+			fmt.Printf("Range   : %s to %s\n", rows[0][labelCol], rows[len(rows)-1][labelCol])
+		}
 	case "/changelog":
 		logs, err := changelog.GetChangelogs()
 		if err != nil {
@@ -904,10 +1178,18 @@ func HandleSlashCommand(input string) {
 		os.Exit(0)
 	case "/model":
 		if GlobalAI == nil {
+			ui.PrintError("AI Client not initialized. Run /setup first.")
 			return
 		}
 		cfg, _ := config.LoadConfig()
-		models := config.GetModelList()
+		provider := ""
+		for _, p := range cfg.AIProfiles {
+			if p.Name == cfg.ActiveAIProfile {
+				provider = p.Provider
+				break
+			}
+		}
+		models := config.GetModelList(provider)
 		var selected string
 		survey.AskOne(&survey.Select{Message: "Select Model:", Options: models}, &selected)
 		if selected != "" {
@@ -1110,10 +1392,13 @@ func HandleSlashCommand(input string) {
 			}
 		}
 
+		session.LogToSession(GlobalSess.ID, fmt.Sprintf("User requested description: /describe %s", target))
 		resp, err := GlobalOrchestrator.Describe(context.Background(), target)
 		if err != nil {
 			ui.PrintError(err.Error())
 		} else {
+			lastResponse = resp
+			session.LogToSession(GlobalSess.ID, fmt.Sprintf("Mayo Description: %s", resp))
 			ui.RenderMarkdown(resp)
 		}
 	case "/privacy":
@@ -1126,9 +1411,129 @@ func HandleSlashCommand(input string) {
 			status = "OFF (PII Masking Disabled)"
 		}
 		ui.PrintSuccess(fmt.Sprintf("Privacy Mode is now %s", status))
+	case "/analyst":
+		cfg, _ := config.LoadConfig()
+		cfg.AnalystEnabled = !cfg.AnalystEnabled
+		config.SaveConfig(cfg)
+		if GlobalOrchestrator != nil {
+			GlobalOrchestrator.AnalystEnabled = cfg.AnalystEnabled
+		}
+		status := "ON (AI analysis will run after queries)"
+		if !cfg.AnalystEnabled {
+			status = "OFF (AI analysis disabled)"
+		}
+		ui.PrintSuccess(fmt.Sprintf("Analyst Insight is now %s", status))
+	case "/clear":
+		ui.ClearScreen()
+		return
 	case "/help":
-		helpManual := `
-# 🐶 Mayo Manual - Senior AI Data Partner (v1.2.0)
+		helpManual := getHelpManual()
+
+		if len(parts) > 1 {
+			query := strings.ToLower(strings.Join(parts[1:], " "))
+			
+			// Simple search logic: find sections containing the query
+			// We split by "###" to get command groups
+			sections := strings.Split(helpManual, "###")
+			var filtered []string
+			
+			// Always include the header if it matches or just to keep context
+			header := sections[0]
+			if strings.Contains(strings.ToLower(header), query) {
+				filtered = append(filtered, header)
+			}
+
+			found := false
+			for i := 1; i < len(sections); i++ {
+				if strings.Contains(strings.ToLower(sections[i]), query) {
+					filtered = append(filtered, "###" + sections[i])
+					found = true
+				}
+			}
+
+			if !found && len(filtered) <= 1 {
+				ui.PrintInfo(fmt.Sprintf("No specific command sections found for '%s'. Showing any matching paragraphs...", query))
+				// Fallback to paragraph search if no ### section matches
+				paragraphs := strings.Split(helpManual, "\n\n")
+				var paraFiltered []string
+				for _, p := range paragraphs {
+					if strings.Contains(strings.ToLower(p), query) {
+						paraFiltered = append(paraFiltered, p)
+					}
+				}
+				if len(paraFiltered) > 0 {
+					ui.RenderMarkdown("# 🐶 Mayo Help Search: " + query + "\n\n" + strings.Join(paraFiltered, "\n\n---\n\n"))
+					return
+				}
+				ui.PrintError(fmt.Sprintf("No help results found for '%s'.", query))
+				return
+			}
+
+			ui.RenderMarkdown("# 🐶 Mayo Help Search: " + query + "\n\n" + strings.Join(filtered, "\n\n"))
+			return
+		}
+
+		ui.RenderMarkdown(helpManual)
+		return
+	default:
+		allCmds := []string{
+			"/export", "/share", "/this", "/scan", "/sources", "/df", "/connect",
+			"/reconcile", "/disconnect", "/knowledge", "/context", "/changelog",
+			"/debug", "/setup", "/exit", "/quit", "/model", "/profile",
+			"/sessions", "/session", "/describe", "/privacy", "/clear", "/help",
+		}
+		
+		bestMatch := ""
+		minDist := 3 // Max distance to be considered a suggestion
+		
+		for _, ac := range allCmds {
+			dist := levenshtein(cmd, ac)
+			if dist < minDist {
+				minDist = dist
+				bestMatch = ac
+			}
+		}
+		
+		if bestMatch != "" {
+			ui.PrintError(fmt.Sprintf("Unknown command: '%s'. Did you mean '%s'?", cmd, bestMatch))
+		} else {
+			ui.PrintError(fmt.Sprintf("Unknown command: '%s'. Type /help for usage.", cmd))
+		}
+	}
+}
+
+// Simple Levenshtein distance for command suggestions
+func levenshtein(s, t string) int {
+	d := make([][]int, len(s)+1)
+	for i := range d {
+		d[i] = make([]int, len(t)+1)
+		d[i][0] = i
+	}
+	for j := range d[0] {
+		d[0][j] = j
+	}
+	for i := 1; i <= len(s); i++ {
+		for j := 1; j <= len(t); j++ {
+			if s[i-1] == t[j-1] {
+				d[i][j] = d[i-1][j-1]
+			} else {
+				min := d[i-1][j]
+				if d[i][j-1] < min {
+					min = d[i][j-1]
+				}
+				if d[i-1][j-1] < min {
+					min = d[i-1][j-1]
+				}
+				d[i][j] = min + 1
+			}
+		}
+	}
+	return d[len(s)][len(t)]
+}
+
+func getHelpManual() string {
+	return `
+# 🐶 Mayo Manual - Senior AI Data Partner (v1.3.0)
 
 Mayo is your autonomous partner for deep data research and analysis. It combines LLM reasoning with direct database and file access. Use it to explore, query, and visualize complex datasets using natural language.
 
@@ -1152,62 +1557,85 @@ Mayo is your autonomous partner for deep data research and analysis. It combines
 - **/sources**
   Displays verbose info about all active connections, their drivers, and aliases.
 
-- **/describe [alias|df]**
-  Generates a statistical summary (Pandas-style) for a dataframe or a data source.
-
 - **/disconnect [alias]**
   Unwires and closes a specific data source connection.
   - **Sample**: ` + "`/disconnect main_db`" + `
   - **Note**: If alias is omitted, Mayo will prompt for selection.
 
+- **/scan**
+  Forces a manual schema re-scan and metadata enrichment for all connected sources. Use this if the database schema has changed while Mayo is running.
+
+### 📊 Dataframes (In-Memory Processing)
+Mayo can "stage" query results into memory for further AI analysis or cross-source joins.
+- **/df list**
+  List all persisted dataframes saved in the local SQLite storage.
+- **/df load [name]**
+  Load a saved dataframe into the active working memory.
+- **/df commit [name]**
+  Persist the current working memory (result of your last query) into the local SQLite storage for future sessions.
+- **/df status**
+  Show the status of the current working copy (rows, columns, and if there are uncommitted changes).
+- **/df reset**
+  Clear the active memory and return Mayo to "Pure Database Mode".
+- **/df export [name]**
+  Export a saved dataframe directly to a Markdown file.
+- **/enhance start**
+  AI-powered data enrichment for SQLite. Add new columns based on AI analysis of existing row data. (Requires Dataframe Mode)
+
+- **/describe [alias|df]**
+  Generates a high-level statistical summary (Pandas-style) for a data source or the active dataframe.
+  - **Sample**: ` + "`/describe main_db`" + ` or ` + "`/describe df`" + `
+
+- **/reconcile <alias1> <alias2>**
+  AI-powered reconciliation between two data sources. Mayo will look for mapping patterns and identify discrepancies.
+
 ### 🧠 AI Intelligence & Configuration
 - **/setup**
-  Interactive wizard to configure AI Providers and Models.
-  - Supports: **Gemini**, **OpenAI**, **Groq (Llama/Qwen)**, **Anthropic (Claude)**.
+  Interactive wizard to configure AI Providers (Gemini, OpenAI, Groq, Anthropic) and Models.
 
 - **/model**
-  Selectively change the LLM model for the current session.
-  - **Sample**: Switch to ` + "`gemini-1.5-pro`" + ` for complex multi-table joins.
-  - **Customization**: Add your own models in ` + "`~/.mayo-cli/models.txt`" + ` to avoid rebuilding.
+  Selectively change the LLM model for the current session without changing the permanent profile.
+  - **Sample**: ` + "`/model`" + ` (then select from the list).
 
 - **/profile [ai|ds]**
   Instantly switch between saved AI or Data Source profiles.
-  - **Sample**: ` + "`/profile ai`" + ` (to switch from OpenAI to Groq).
 
 - **/context [text|file|clear]**
-  Injects persistent business rules or domain knowledge into the AI's prompts.
+  Injects persistent business rules or domain knowledge.
   - **Sample**: ` + "`/context \"Always use Indonesian for final reports\"`" + `
-  - **Sample**: ` + "`/context \"./docs/business_rules.txt\"`" + `
+  - **Sample**: ` + "`/context clear`" + ` to remove current context.
 
 ### 📚 Knowledge Base (RAG)
 - **/knowledge [path]**
-  Parses and indexes external documents into the local vector database.
-  - **Formats**: ` + "`.pdf, .md, .txt`" + `.
-  - **Sample**: ` + "`/knowledge \"./manuals/api_spec.pdf\"`" + `
+  Parses and indexes external documents (` + "`.pdf, .md, .txt`" + `) into the local vector database for semantic search during analysis.
 
 - **/privacy**
-  Toggle Privacy Mode ON/OFF. When ON, Mayo automatically masks PII (Emails, Phones) and credentials from UI, Logs, and AI prompts.
-  - **Status**: Default is ON. Use this if you need to see raw PII data.
+  Toggle PII Masking. When ON, Mayo masks Emails, Phones, and Credentials. Default is **ON**.
 
 - **/debug**
-  Toggle Debug Mode ON/OFF. When ON, Mayo will display the raw system and user prompts sent to the AI before processing.
-  - **Sample**: Use this to troubleshoot why the AI is generating incorrect SQL.
+  Toggle Debug Mode. When ON, raw LLM prompts and responses are displayed in the terminal.
 
 ### 💾 Sessions & Research Management
-- **/sessions [create|rename|clear]**
-  Manages the research lifecycle.
-  - **Sample**: ` + "`/sessions rename`" + ` (allows naming your current research for later retrieval).
+- **/sessions [create|rename|clear|delete]**
+  Manage your research lifecycle. Each session has its own vault, logs, and metadata.
+  - **create**: Start a fresh research thread.
+  - **rename**: Give a meaningful name to the current session.
+  - **clear**: WIP - Delete all historical sessions.
+  - **delete**: Remove a specific historical session.
 
 - **/export [filename.md]**
   Saves the raw session history (all queries and answers) to a Markdown file.
 
 - **/share [filename.md]**
-  Uses AI to synthesize your entire session into a professional Executive Report.
-  - **Sample**: ` + "`/share findings.md`" + `
+  Uses AI to synthesize your entire session into a professional Executive Report. Useful for sending findings to stakeholders.
 
-### 🛸 Inspection & Debugging
+### 🛸 Inspection & Utilities
 - **/this**
-  Provides an overwhelming, verbose dump of the current session state, file paths, AI client details, and active data source schemas.
+  A "God Mode" view of the current state: session IDs, file paths, active schemas, and PII vault stats.
+- **/clear**
+  Clears the terminal screen for a fresh workspace.
+- **/changelog**
+  View the latest updates and feature additions in Mayo.
 
 ### 🚪 Exit & Quit
 - **/exit** or **/quit** - Safely terminates the CLI session.
@@ -1215,15 +1643,14 @@ Mayo is your autonomous partner for deep data research and analysis. It combines
 ---
 
 ## 💡 EXPERT USAGE TIPS
-1. **Multi-Source Joins**: Connect a Postgres DB and an Excel file at the same time. You can ask: "How many users in ` + "`production_db`" + ` have orders recorded in the ` + "`sales`" + ` Excel sheet?"
-2. **Read-Only Safety**: Every SQL query is validated against a blacklist of WRITE operations (` + "`INSERT`" + `, ` + "`UPDATE`" + `, ` + "`DELETE`" + `, etc.).
-3. **Thought Blocks**: Look at the ` + "`thought`" + ` blocks to understand *how* the AI interpreted your data schema.
+1. **Natural Language Queries**: Don't just ask for data. Ask for *analysis*.
+   - *Example*: "Why did sales drop in Q3 based on the ` + "`orders`" + ` and ` + "`returns`" + ` tables?"
+2. **Cross-Source Joins**: Connect multiple databases or files and ask questions that require joining them.
+3. **Thought Blocks**: If Mayo is struggling, read the ` + "`thought`" + ` blocks to see its reasoning and correct it in your next prompt.
 
 *Mayo by Teleskop.id*
 *Status: READY | READ-ONLY: ON*
 ---`
-		ui.RenderMarkdown(helpManual)
-	}
 }
 
 func HandleKnowledge(filePath string) {
