@@ -181,12 +181,12 @@ func HandleEnhanceStart(cmd *cobra.Command, args []string) {
 	// Spawn background process
 	exe, _ := os.Executable()
 	workerCmd := exec.Command(exe, "enhance-worker", id)
-	
+
 	// Redirect output to log file
 	logFile, _ := os.OpenFile(enhancer.GetLogPath(id), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	workerCmd.Stdout = logFile
 	workerCmd.Stderr = logFile
-	
+
 	// Detach (Platform specific usually, but for simple backgrounding in Go):
 	err := workerCmd.Start()
 	if err != nil {

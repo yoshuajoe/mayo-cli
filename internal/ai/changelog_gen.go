@@ -13,7 +13,7 @@ func GenerateChangelogFromCommits(ctx context.Context, ai AIClient, commits []st
 	}
 
 	commitList := strings.Join(commits, "\n")
-	
+
 	systemPrompt := `You are a Senior Technical Writer. 
 Your task is to generate a professional Markdown changelog from a list of git commit messages.
 The output should be categorized (e.g., Features, Bug Fixes, Chores, Documentation).

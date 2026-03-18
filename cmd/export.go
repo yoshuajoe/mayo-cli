@@ -2,9 +2,9 @@ package cmd
 
 import (
 	"fmt"
+	"mayo-cli/internal/config"
 	"os"
 	"path/filepath"
-	"mayo-cli/internal/config"
 
 	"github.com/spf13/cobra"
 )
@@ -18,7 +18,7 @@ var exportCmd = &cobra.Command{
 		outputFile := args[1]
 
 		sessionDir := filepath.Join(config.GetConfigDir(), "sessions", sessionID)
-		
+
 		entries, err := os.ReadDir(sessionDir)
 		if err != nil {
 			fmt.Printf("❌ Error reading session: %v\n", err)

@@ -10,7 +10,7 @@ func GetCommitsSinceLastTag() ([]string, error) {
 	// 1. Get the last tag
 	tagCmd := exec.Command("git", "describe", "--tags", "--abbrev=0")
 	tagBytes, err := tagCmd.Output()
-	
+
 	var lastTag string
 	if err != nil {
 		// If no tag found, get first commit

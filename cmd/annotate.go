@@ -2,9 +2,9 @@ package cmd
 
 import (
 	"fmt"
-	"strings"
-	"mayo-cli/internal/ui"
 	"github.com/spf13/cobra"
+	"mayo-cli/internal/ui"
+	"strings"
 )
 
 var annotateCmd = &cobra.Command{
@@ -12,11 +12,11 @@ var annotateCmd = &cobra.Command{
 	Short: "Add a custom description/annotation to a table or column",
 	Example: `  /annotate p1.users This table contains production user data
   /annotate p1.users.email Primary email for user notifications`,
-	Args:  cobra.MinimumNArgs(2),
+	Args: cobra.MinimumNArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
 		target := args[0]
 		description := strings.Join(args[1:], " ")
-		
+
 		if GlobalOrchestrator == nil {
 			ui.PrintError("No active orchestrator. Connect to a database first.")
 			return

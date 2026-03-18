@@ -11,10 +11,10 @@ import (
 	"mayo-cli/internal/ai"
 	"mayo-cli/internal/config"
 	"mayo-cli/internal/db"
-	_ "modernc.org/sqlite"
 	"mayo-cli/internal/files"
 	"mayo-cli/internal/session"
 	"mayo-cli/internal/ui"
+	_ "modernc.org/sqlite"
 
 	"github.com/spf13/cobra"
 )
@@ -37,7 +37,7 @@ func HandleConnect(driver, dsn, alias string, source string) {
 	// 1. Check if profile already exists for this DSN/Driver to avoid duplicates
 	exists := false
 	finalProfileName := source
-	
+
 	for _, p := range cfg.DSProfiles {
 		if p.DSN == dsn && p.Driver == driver {
 			exists = true
@@ -176,7 +176,6 @@ func HandleConnect(driver, dsn, alias string, source string) {
 		}
 	}
 }
-
 
 func ensureOrchestrator(cfg *config.Config) {
 	if GlobalOrchestrator == nil {

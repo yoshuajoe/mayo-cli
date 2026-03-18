@@ -2,9 +2,9 @@ package cmd
 
 import (
 	"fmt"
-	"mayo-cli/internal/ui"
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/spf13/cobra"
+	"mayo-cli/internal/ui"
 )
 
 func RunWizard() {
@@ -63,9 +63,9 @@ func RunWizard() {
 }
 
 var wizardCmd = &cobra.Command{
-	Use:   "wizard",
+	Use:     "wizard",
 	Aliases: []string{"init"},
-	Short: "Start the onboarding wizard for first-time setup",
+	Short:   "Start the onboarding wizard for first-time setup",
 	Run: func(cmd *cobra.Command, args []string) {
 		RunWizard()
 	},

@@ -7,13 +7,13 @@ import (
 )
 
 type Client struct {
-	APIKey string
+	APIKey  string
 	BaseURL string
 }
 
 func NewClient(apiKey string) *Client {
 	return &Client{
-		APIKey: apiKey,
+		APIKey:  apiKey,
 		BaseURL: "https://api.teleskop.id/v1", // Placeholder URL
 	}
 }
@@ -35,10 +35,10 @@ func (c *Client) GetUsage(ctx context.Context) (*UsageStats, error) {
 }
 
 type ScraperConfig struct {
-	Keyword    string `json:"keyword"`
-	Interval   int    `json:"interval"` // in minutes
-	MaxPage    int    `json:"max_page"`
-	Language   string `json:"language"`
+	Keyword  string `json:"keyword"`
+	Interval int    `json:"interval"` // in minutes
+	MaxPage  int    `json:"max_page"`
+	Language string `json:"language"`
 }
 
 type ScraperStatus struct {
@@ -63,8 +63,8 @@ func (c *Client) ListScrapers(ctx context.Context) ([]ScraperStatus, error) {
 func (c *Client) GetScraperStatus(ctx context.Context, id string) (*ScraperStatus, error) {
 	// TODO: Implement actual API call
 	return &ScraperStatus{
-		ID: id,
-		Status: "running",
+		ID:        id,
+		Status:    "running",
 		StartTime: time.Now().Add(-1 * time.Hour),
 	}, nil
 }

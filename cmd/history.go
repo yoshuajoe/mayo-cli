@@ -2,9 +2,9 @@ package cmd
 
 import (
 	"fmt"
+	"mayo-cli/internal/config"
 	"os"
 	"path/filepath"
-	"mayo-cli/internal/config"
 
 	"github.com/spf13/cobra"
 )
@@ -16,7 +16,7 @@ var historyCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		sessionID := args[0]
 		sessionDir := filepath.Join(config.GetConfigDir(), "sessions", sessionID)
-		
+
 		entries, err := os.ReadDir(sessionDir)
 		if err != nil {
 			fmt.Printf("Error reading session history: %v\n", err)

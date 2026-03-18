@@ -27,7 +27,7 @@ func (c *Compressor) CompressSchema(schema *db.Schema) string {
 			if col.Type != "" {
 				cStr += ":" + col.Type
 			}
-			// ONLY include categories for Categorical columns. 
+			// ONLY include categories for Categorical columns.
 			// Random samples are too expensive for large schemas and often unhelpful.
 			if col.IsCategorical && len(col.Categories) > 0 {
 				cStr += "[cats:" + strings.Join(col.Categories, ",") + "]"

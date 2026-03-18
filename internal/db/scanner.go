@@ -165,7 +165,7 @@ func scanSQLite(ctx context.Context, db *sql.DB) (*Schema, error) {
 		}
 
 		table := Table{Name: tableName}
-		
+
 		// Get columns for this table
 		colRows, err := db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", tableName))
 		if err != nil {
@@ -200,7 +200,7 @@ func ScanAndEnrichSchema(ctx context.Context, dbConn *sql.DB, driver string) (*S
 
 	for i := range schema.Tables {
 		tbl := &schema.Tables[i]
-		
+
 		fullTableName := tbl.Name
 		if tbl.SchemaName != "" {
 			fullTableName = fmt.Sprintf("%s.%s", tbl.SchemaName, tbl.Name)
@@ -216,7 +216,7 @@ func ScanAndEnrichSchema(ctx context.Context, dbConn *sql.DB, driver string) (*S
 		// 2. Sample data and identify Categorical fields
 		for j := range tbl.Columns {
 			col := &tbl.Columns[j]
-			
+
 			// Get samples
 			limit := 5
 			query := fmt.Sprintf("SELECT DISTINCT %s FROM %s WHERE %s IS NOT NULL LIMIT %d", col.Name, fullTableName, col.Name, limit)

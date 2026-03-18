@@ -2,16 +2,16 @@ package teleskop
 
 import (
 	"encoding/json"
+	"mayo-cli/internal/config"
 	"os"
 	"path/filepath"
 	"sync"
-	"mayo-cli/internal/config"
 )
 
 type Manager struct {
-	mu           sync.RWMutex
-	Scrapers     map[string]*ScraperStatus `json:"scrapers"`
-	configDir    string
+	mu        sync.RWMutex
+	Scrapers  map[string]*ScraperStatus `json:"scrapers"`
+	configDir string
 }
 
 func NewManager() *Manager {

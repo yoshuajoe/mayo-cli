@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"mayo-cli/internal/config"
 	"mayo-cli/internal/privacy"
-	"github.com/google/uuid"
 	"sort"
 )
 
@@ -29,7 +29,7 @@ type Session struct {
 func NewSession() (*Session, error) {
 	id := uuid.New().String()
 	sessionDir := filepath.Join(config.GetConfigDir(), "sessions", id)
-	
+
 	if err := os.MkdirAll(sessionDir, 0755); err != nil {
 		return nil, err
 	}

@@ -15,10 +15,10 @@ import (
 // and a bidirectional mapping of original PII <-> tokens
 type Vault struct {
 	mu       sync.RWMutex
-	key      []byte                    // 32-byte AES-256 key
-	forward  map[string]string         // original value -> token (e.g., "user@mail.com" -> "«EMAIL_1»")
-	reverse  map[string]string         // token -> original value (e.g., "«EMAIL_1»" -> "user@mail.com")
-	counters map[EntityType]int        // counter per entity type for naming
+	key      []byte             // 32-byte AES-256 key
+	forward  map[string]string  // original value -> token (e.g., "user@mail.com" -> "«EMAIL_1»")
+	reverse  map[string]string  // token -> original value (e.g., "«EMAIL_1»" -> "user@mail.com")
+	counters map[EntityType]int // counter per entity type for naming
 	detector *Detector
 }
 

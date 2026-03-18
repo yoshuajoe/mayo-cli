@@ -37,13 +37,15 @@ func IndexDocument(db *sql.DB, doc *Document, tableName string) error {
 	chunks := strings.Split(doc.Content, "\n")
 	var refinedChunks []string
 	var currentChunk strings.Builder
-	
+
 	const maxChunkSize = 800
 	for _, line := range chunks {
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "" { continue }
-		
-		if currentChunk.Len() + len(trimmed) > maxChunkSize {
+		if trimmed == "" {
+			continue
+		}
+
+		if currentChunk.Len()+len(trimmed) > maxChunkSize {
 			refinedChunks = append(refinedChunks, currentChunk.String())
 			currentChunk.Reset()
 		}
@@ -69,7 +71,9 @@ func IndexDocument(db *sql.DB, doc *Document, tableName string) error {
 	defer stmt.Close()
 
 	for _, chunk := range refinedChunks {
-		if len(strings.TrimSpace(chunk)) < 20 { continue }
+		if len(strings.TrimSpace(chunk)) < 20 {
+			continue
+		}
 		_, _ = stmt.Exec(doc.Source, chunk)
 	}
 

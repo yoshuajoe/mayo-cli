@@ -9,7 +9,7 @@ import (
 // In a real implementation, this could be a separate binary or a detached process.
 func BackgroundWorker(id string, config ScraperConfig) {
 	fmt.Printf("Starting background worker for %s...\n", id)
-	
+
 	// Ensure the storage is ready
 	InitializeScraperTable(id)
 

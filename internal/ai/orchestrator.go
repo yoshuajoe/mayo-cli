@@ -10,18 +10,18 @@ import (
 	"sort"
 	"strings"
 
-	"mayo-cli/internal/config"
-	"mayo-cli/internal/db"
-	"mayo-cli/internal/dataframe"
+	"github.com/AlecAivazis/survey/v2"
+	"github.com/blastrain/vitess-sqlparser/sqlparser"
 	_ "github.com/mattn/go-sqlite3"
+	"mayo-cli/internal/config"
+	"mayo-cli/internal/dataframe"
+	"mayo-cli/internal/db"
 	"mayo-cli/internal/files"
 	"mayo-cli/internal/knowledge"
 	"mayo-cli/internal/privacy"
 	"mayo-cli/internal/session"
 	"mayo-cli/internal/ui"
 	"os"
-	"github.com/blastrain/vitess-sqlparser/sqlparser"
-	"github.com/AlecAivazis/survey/v2"
 )
 
 type DBConnection struct {
@@ -35,13 +35,13 @@ type DBConnection struct {
 }
 
 type Orchestrator struct {
-	AI          AIClient
-	Connections map[string]*DBConnection
-	Files       []*files.FileData
-	Session     *session.Session
+	AI             AIClient
+	Connections    map[string]*DBConnection
+	Files          []*files.FileData
+	Session        *session.Session
 	Ctx            string
 	UserContext    string
-	LastResultData string // tokenized JSON for AI context
+	LastResultData string     // tokenized JSON for AI context
 	LastCols       []string   // raw column names (working copy)
 	LastRows       [][]string // raw (real) values (working copy)
 	LastSQL        string     // last executed SQL
@@ -126,11 +126,11 @@ func (o *Orchestrator) ProcessQuery(ctx context.Context, userInput string) (stri
 			systemPrompt += "\n\nCRITICAL: There is NO default limit for queries. You MUST prioritize selecting ALL data unless the user asks for a sample."
 		}
 
-			// 2. Dataframes as Tables (THE NEW WAY)
-			if o.StagedName != "" {
-				systemPrompt += fmt.Sprintf("\n\nDATAFRAME MODE: The active dataframe '%s' is available as a local table named 'df_%s'.", o.StagedName, o.StagedName)
-				systemPrompt += "\nCRITICAL: DO NOT ask for data samples. Write standard SQL queries against 'df_" + o.StagedName + "' to analyze the data. I will execute them against the local SQLite store."
-			}
+		// 2. Dataframes as Tables (THE NEW WAY)
+		if o.StagedName != "" {
+			systemPrompt += fmt.Sprintf("\n\nDATAFRAME MODE: The active dataframe '%s' is available as a local table named 'df_%s'.", o.StagedName, o.StagedName)
+			systemPrompt += "\nCRITICAL: DO NOT ask for data samples. Write standard SQL queries against 'df_" + o.StagedName + "' to analyze the data. I will execute them against the local SQLite store."
+		}
 
 		if len(o.Connections) > 1 {
 			systemPrompt += "\n\nCRITICAL: MULTIPLE DATA SOURCES DETECTED. You can join across them by using the format 'alias.table_name' in your SQL query. If they are from the same driver, I will handle the routing. If they are from different drivers, prioritize analyzing them sequentially unless they are imported files (which all live in the same SQLite engine)."
@@ -184,7 +184,7 @@ func (o *Orchestrator) ProcessQuery(ctx context.Context, userInput string) (stri
 	}
 
 	// 2. Generate SQL from AI
-	if o.AI == nil { 
+	if o.AI == nil {
 		return "", fmt.Errorf("AI client not initialized. Please run /setup to configure your AI profile.")
 	}
 	ui.RenderStep("🤖", "Requesting LLM analysis...")
@@ -238,7 +238,7 @@ func (o *Orchestrator) ProcessQuery(ctx context.Context, userInput string) (stri
 		var records []map[string]interface{}
 		if err := json.Unmarshal([]byte(jsonData), &records); err == nil && len(records) > 0 {
 			ui.RenderStep("🔄", "Updating working copy with AI-transformed data...")
-			
+
 			// Extract columns and rows
 			newCols := []string{}
 			// Use the keys from the first record as columns
@@ -260,7 +260,7 @@ func (o *Orchestrator) ProcessQuery(ctx context.Context, userInput string) (stri
 			o.LastRows = newRows
 			o.IsDirty = true
 			o.LastResultData = fmt.Sprintf("Columns: %s\nRows: %s", strings.Join(newCols, ", "), jsonData)
-			
+
 			ui.PrintSuccess("Working copy updated. Use '/df commit' to save permanently.")
 		}
 	}
@@ -289,11 +289,11 @@ func (o *Orchestrator) executeAndAnalyze(ctx context.Context, userInput, sqlQuer
 		// --- SMART ROUTING ---
 		// If query targets a dataframe (prefixed with df_ or matches staged name), execute against local storage
 		isDfQuery := o.StagedName != "" && (strings.Contains(strings.ToLower(sqlQuery), "df_") || strings.Contains(strings.ToLower(sqlQuery), strings.ToLower(o.StagedName)))
-		
+
 		if isDfQuery {
 			ui.RenderSQLStatus("Executing query against local Dataframe engine...")
 			ui.RenderSQLQuery(sqlQuery)
-			
+
 			cols, rows, err := dataframe.Query(sqlQuery)
 			if err != nil {
 				return "", fmt.Errorf("local engine error: %v", err)
@@ -384,10 +384,9 @@ func (o *Orchestrator) executeAndAnalyze(ctx context.Context, userInput, sqlQuer
 	if usage != nil {
 		ui.RenderUsage(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
 	}
-	
+
 	return finalResponse, nil
 }
-
 
 func (o *Orchestrator) AnalyzeResults(ctx context.Context, originalQuery, sql, aiPrompt string) (string, error) {
 	// 1. Get the actual data from the last execution (we'll need a way to capture it)
@@ -415,11 +414,11 @@ Respond in Markdown.`, originalQuery, sql, dataString)
 	if err != nil {
 		return "", err
 	}
-	
+
 	// Clean up thought blocks from analysis
 	analysis = regexp.MustCompile("(?is)<think>.*?</think>").ReplaceAllString(analysis, "")
 	analysis = regexp.MustCompile("(?is)<thought>.*?</thought>").ReplaceAllString(analysis, "")
-	
+
 	return strings.TrimSpace(analysis), nil
 }
 
@@ -436,7 +435,7 @@ func (o *Orchestrator) ensureSessionSummary(ctx context.Context, firstInput stri
 		summary = regexp.MustCompile("(?is)<think>.*?</think>").ReplaceAllString(summary, "")
 		summary = regexp.MustCompile("(?is)<thought>.*?</thought>").ReplaceAllString(summary, "")
 		summary = regexp.MustCompile("(?is)```thought.*?```").ReplaceAllString(summary, "")
-		
+
 		// 2. Remove markdown code blocks if any
 		summary = regexp.MustCompile("(?s)```.*?```").ReplaceAllString(summary, "")
 
@@ -478,7 +477,7 @@ func renderAIResponse(response string) {
 	// Extract SQL block if exists
 	sqlRegex := regexp.MustCompile("(?s)```sql(.*?)```")
 	sqlMatch := sqlRegex.FindStringSubmatch(response)
-	
+
 	mainText := sqlRegex.ReplaceAllString(response, "")
 	if strings.TrimSpace(mainText) != "" {
 		ui.RenderMarkdown(mainText)
@@ -528,7 +527,7 @@ func (o *Orchestrator) ExecuteAndRender(query string) error {
 	// Build CSV-like format for AI context (Much more token efficient)
 	var sb strings.Builder
 	sb.WriteString(strings.Join(cols, "|") + "\n")
-	
+
 	sampleSize := len(data)
 	if sampleSize > 20 {
 		sampleSize = 20
@@ -547,8 +546,8 @@ func (o *Orchestrator) ExecuteAndRender(query string) error {
 		}
 		sb.WriteString("\n")
 	}
-	
-	o.LastResultData = fmt.Sprintf("Format: CSV (Pipe Separated)\nData (showing 20 of %d rows):\n%s", 
+
+	o.LastResultData = fmt.Sprintf("Format: CSV (Pipe Separated)\nData (showing 20 of %d rows):\n%s",
 		len(data), sb.String())
 
 	ui.RenderTable(cols, data)
@@ -792,7 +791,7 @@ func (o *Orchestrator) SyncSchema(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		
+
 		// If we already have descriptions (from LoadMetadata), preserve them
 		if conn.Schema != nil {
 			for _, oldTbl := range conn.Schema.Tables {
@@ -845,7 +844,7 @@ func (o *Orchestrator) LoadMetadata(alias string) {
 	}
 	sessionDir := filepath.Join(config.GetConfigDir(), "sessions", o.Session.ID)
 	metadataPath := filepath.Join(sessionDir, fmt.Sprintf("metadata_%s.md", alias))
-	
+
 	if data, err := os.ReadFile(metadataPath); err == nil {
 		schema, err := db.ParseSchemaFromMarkdown(string(data))
 		if err == nil && schema != nil {
@@ -881,10 +880,10 @@ func (o *Orchestrator) Describe(ctx context.Context, target string) (string, err
 			return "", fmt.Errorf("no active dataframe to describe")
 		}
 		ui.RenderStep("📊", fmt.Sprintf("Generating descriptive statistics for active dataframe '%s'...", o.StagedName))
-		
+
 		// Get basic stats from LastRows
 		rowCount := len(o.LastRows)
-		
+
 		sampleData := o.LastResultData
 		if len(sampleData) > 2000 {
 			sampleData = sampleData[:2000] + "..."
@@ -914,7 +913,7 @@ If numeric data isn't obvious, use your best judgment. Be professional and helpf
 		if conn.Schema == nil {
 			o.SyncSchema(ctx)
 		}
-		
+
 		schemaMD := db.ExportSchemaToMarkdown(conn.Schema)
 		describePrompt := fmt.Sprintf(`You are Mayo. Provide a summary of this data source:
 Alias: %s
@@ -942,7 +941,7 @@ func isLikelySQL(input string) bool {
 	upper := strings.ToUpper(strings.TrimSpace(input))
 	// Basic keywords that start a direct query
 	keywords := []string{"SELECT", "WITH", "SHOW", "DESCRIBE", "EXPLAIN", "PRAGMA"}
-	
+
 	isKeywordStart := false
 	var matchedKey string
 	for _, k := range keywords {
@@ -952,7 +951,7 @@ func isLikelySQL(input string) bool {
 			break
 		}
 	}
-	
+
 	if !isKeywordStart {
 		return false
 	}

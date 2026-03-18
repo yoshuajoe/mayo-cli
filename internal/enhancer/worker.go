@@ -89,13 +89,13 @@ func (w *Worker) Run(ctx context.Context) error {
 	if strings.HasPrefix(w.Config.Table, "df_") {
 		dfName := strings.TrimPrefix(w.Config.Table, "df_")
 		logger.Printf("Updating metadata for dataframe: %s", dfName)
-		
+
 		var colsJSON string
 		row := conn.QueryRowContext(ctx, "SELECT columns FROM _frames WHERE name = ?", dfName)
 		if err := row.Scan(&colsJSON); err == nil {
 			var columns []string
 			json.Unmarshal([]byte(colsJSON), &columns)
-			
+
 			// Check if column already in metadata
 			exists := false
 			for _, c := range columns {
@@ -104,7 +104,7 @@ func (w *Worker) Run(ctx context.Context) error {
 					break
 				}
 			}
-			
+
 			if !exists {
 				columns = append(columns, w.Config.TargetColumn)
 				newJSON, _ := json.Marshal(columns)
