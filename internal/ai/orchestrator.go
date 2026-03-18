@@ -184,7 +184,7 @@ func (o *Orchestrator) ProcessQuery(ctx context.Context, userInput string) (stri
 	}
 
 	// 2. Generate SQL from AI
-	if o.AI == nil {
+	if o.AI == nil { 
 		return "", fmt.Errorf("AI client not initialized. Please run /setup to configure your AI profile.")
 	}
 	ui.RenderStep("🤖", "Requesting LLM analysis...")
