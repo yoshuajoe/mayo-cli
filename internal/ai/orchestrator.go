@@ -233,6 +233,17 @@ If the knowledge context does not contain enough information, or the user asks a
 
 	ui.RenderStep("🗜️", "Compressing prompt for token efficiency...")
 
+	// 1. Log user input
+	if o.Session != nil {
+		session.LogToSession(o.Session.ID, fmt.Sprintf("User: %s", userInput))
+	}
+
+	trimmedInput := strings.TrimSpace(userInput)
+	if isLikelySQL(trimmedInput) {
+		ui.RenderStep("⚡", "Direct SQL detected. Skipping AI analysis...")
+		return o.executeAndAnalyze(ctx, userInput, trimmedInput, "", "", nil)
+	}
+ 
 	// 2. Generate SQL from AI
 	if o.AI == nil {
 		return "", fmt.Errorf("AI client not initialized. Please run /setup to configure your AI profile.")
