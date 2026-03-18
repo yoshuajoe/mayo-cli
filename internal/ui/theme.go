@@ -7,8 +7,8 @@ import (
 
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
-	"mayo-cli/internal/privacy"
 	"golang.org/x/term"
+	"mayo-cli/internal/privacy"
 )
 
 var (
@@ -21,16 +21,16 @@ var (
 	ColorHighlight = lipgloss.Color("#F1FA8C")
 
 	// Styles
-	StyleTitle      = lipgloss.NewStyle().Foreground(ColorSecondary).Bold(true)
-	StyleBanner     = lipgloss.NewStyle().Foreground(ColorWhite)
-	StyleMonster    = lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true)
-	StyleSeparator  = lipgloss.NewStyle().Foreground(ColorMuted)
-	StylePrompt     = lipgloss.NewStyle().Foreground(ColorSecondary).Bold(true)
-	StyleStatus     = lipgloss.NewStyle().Foreground(ColorHighlight).Italic(true)
-	StyleError      = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Bold(true)
-	StyleSuccess    = lipgloss.NewStyle().Foreground(ColorGreen).Bold(true)
-	StyleDocTitle   = lipgloss.NewStyle().Foreground(ColorPrimary).Underline(true)
-	StyleCodeLine   = lipgloss.NewStyle().Foreground(lipgloss.Color("#8BE9FD"))
+	StyleTitle       = lipgloss.NewStyle().Foreground(ColorSecondary).Bold(true)
+	StyleBanner      = lipgloss.NewStyle().Foreground(ColorWhite)
+	StyleMonster     = lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true)
+	StyleSeparator   = lipgloss.NewStyle().Foreground(ColorMuted)
+	StylePrompt      = lipgloss.NewStyle().Foreground(ColorSecondary).Bold(true)
+	StyleStatus      = lipgloss.NewStyle().Foreground(ColorHighlight).Italic(true)
+	StyleError       = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Bold(true)
+	StyleSuccess     = lipgloss.NewStyle().Foreground(ColorGreen).Bold(true)
+	StyleDocTitle    = lipgloss.NewStyle().Foreground(ColorPrimary).Underline(true)
+	StyleCodeLine    = lipgloss.NewStyle().Foreground(lipgloss.Color("#8BE9FD"))
 	StyleDiffAdded   = lipgloss.NewStyle().Foreground(ColorWhite).Background(lipgloss.Color("#1B391B"))
 	StyleDiffRemoved = lipgloss.NewStyle().Foreground(ColorWhite).Background(lipgloss.Color("#391B1B"))
 	StyleLineNumber  = lipgloss.NewStyle().Foreground(ColorMuted)
@@ -42,14 +42,14 @@ var (
 				BorderForeground(ColorSecondary).
 				Padding(1, 2).
 				MarginTop(1)
-	StyleSQLTable    = lipgloss.NewStyle().
-				Border(lipgloss.NormalBorder()).
-				BorderForeground(ColorMuted).
-				MarginLeft(2)
+	StyleSQLTable = lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(ColorMuted).
+			MarginLeft(2)
 
 	// Debug
-	DebugEnabled = false
-	StyleDebug   = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFB86C")).Italic(true)
+	DebugEnabled  = false
+	StyleDebug    = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFB86C")).Italic(true)
 	StyleDebugLLM = lipgloss.NewStyle().Foreground(lipgloss.Color("#BD93F9")).Italic(true) // Dracula Purple
 )
 
@@ -86,7 +86,7 @@ func PrintBanner(version string) {
 
 	fmt.Println(title)
 	fmt.Println(sep)
-	
+
 	banner := lipgloss.JoinVertical(lipgloss.Left,
 		StyleBanner.Render(stars),
 		lipgloss.JoinHorizontal(lipgloss.Center,
@@ -95,7 +95,7 @@ func PrintBanner(version string) {
 		),
 		StyleMonster.Render(poodle),
 	)
-	
+
 	fmt.Println(banner)
 	fmt.Println(StyleStatus.Render("   Mayo the Poodle is ready to help!"))
 	fmt.Println(sep)
@@ -337,4 +337,3 @@ func RenderDebugLLM(title, content string) {
 func ClearScreen() {
 	fmt.Print("\033[H\033[2J")
 }
-

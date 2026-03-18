@@ -3,9 +3,9 @@ package teleskop
 import (
 	"database/sql"
 	"fmt"
-	"path/filepath"
 	"mayo-cli/internal/config"
 	"mayo-cli/internal/db"
+	"path/filepath"
 )
 
 func GetScraperDBPath(id string) string {

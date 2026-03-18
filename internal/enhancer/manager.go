@@ -2,17 +2,17 @@ package enhancer
 
 import (
 	"encoding/json"
+	"mayo-cli/internal/config"
 	"os"
 	"path/filepath"
 	"sync"
-	"mayo-cli/internal/config"
 )
 
 type Manager struct {
-	mu           sync.RWMutex
-	Enhancers    map[string]*EnhancerStatus `json:"enhancers"`
-	Configs      map[string]*EnhancerConfig `json:"configs"`
-	configDir    string
+	mu        sync.RWMutex
+	Enhancers map[string]*EnhancerStatus `json:"enhancers"`
+	Configs   map[string]*EnhancerConfig `json:"configs"`
+	configDir string
 }
 
 func NewManager() *Manager {

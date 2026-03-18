@@ -46,8 +46,8 @@ func TestExtractJSON(t *testing.T) {
 
 func TestBasicSecurityCheck(t *testing.T) {
 	tests := []struct {
-		query   string
-		isSafe  bool
+		query  string
+		isSafe bool
 	}{
 		{"SELECT * FROM users", true},
 		{"SELECT 1", true},

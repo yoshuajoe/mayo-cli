@@ -686,7 +686,7 @@ func HandleSlashCommand(input string) {
 			return
 		}
 		ui.PrintInfo("Sources:")
-		
+
 		// 1. Teleskop.id Scraper (Always at top if configured)
 		cfg, _ := config.LoadConfig()
 		if cfg.GetTeleskopAPIKey() != "" {
@@ -1082,23 +1082,25 @@ func HandleSlashCommand(input string) {
 			ui.PrintInfo("No data in memory to plot. Run a query first.")
 			return
 		}
-		
+
 		cols := GlobalOrchestrator.LastCols
 		rows := GlobalOrchestrator.LastRows
-		
+
 		// Map numerical columns
 		numOptions := []string{}
 		for i, c := range cols {
 			numOptions = append(numOptions, fmt.Sprintf("%d: %s", i, c))
 		}
-		
+
 		var selectedNum string
 		err := survey.AskOne(&survey.Select{
 			Message: "Select Numeric Column (Y-Axis):",
 			Options: numOptions,
 		}, &selectedNum)
-		if err != nil { return }
-		
+		if err != nil {
+			return
+		}
+
 		var numCol int
 		fmt.Sscanf(selectedNum, "%d:", &numCol)
 
@@ -1107,25 +1109,29 @@ func HandleSlashCommand(input string) {
 			Message: "Select Label Column (X-Axis, e.g. Date/ID):",
 			Options: append([]string{"[None/Sequence]"}, numOptions...),
 		}, &selectedLabel)
-		
+
 		labelCol := -1
 		if selectedLabel != "[None/Sequence]" {
 			fmt.Sscanf(selectedLabel, "%d:", &labelCol)
 		}
-		
+
 		var dataPoints []float64
 		var min, max, sum float64
 		min = math.MaxFloat64
-		
+
 		for _, row := range rows {
 			var val float64
 			// Clean currency/percent signs if any
 			cleanVal := regexp.MustCompile(`[^0-9\.-]`).ReplaceAllString(row[numCol], "")
 			fmt.Sscanf(cleanVal, "%f", &val)
 			dataPoints = append(dataPoints, val)
-			
-			if val < min { min = val }
-			if val > max { max = val }
+
+			if val < min {
+				min = val
+			}
+			if val > max {
+				max = val
+			}
 			sum += val
 		}
 
@@ -1133,7 +1139,7 @@ func HandleSlashCommand(input string) {
 			ui.PrintError("No numeric data points found.")
 			return
 		}
-		
+
 		avg := sum / float64(len(dataPoints))
 		title := fmt.Sprintf("Plot: %s", cols[numCol])
 		if labelCol != -1 {
@@ -1141,14 +1147,14 @@ func HandleSlashCommand(input string) {
 		}
 
 		fmt.Println(ui.RenderChart(dataPoints, title))
-		
+
 		// Show Stats Summary
 		fmt.Printf("\n%s\n", ui.StyleHighlight.Render("📈 STATS SUMMARY"))
 		fmt.Printf("Records : %d\n", len(dataPoints))
 		fmt.Printf("Min     : %s\n", ui.StyleError.Render(fmt.Sprintf("%.2f", min)))
 		fmt.Printf("Max     : %s\n", ui.StyleSuccess.Render(fmt.Sprintf("%.2f", max)))
 		fmt.Printf("Average : %s\n", ui.StyleTitle.Render(fmt.Sprintf("%.2f", avg)))
-		
+
 		if labelCol != -1 && len(rows) > 0 {
 			fmt.Printf("Range   : %s to %s\n", rows[0][labelCol], rows[len(rows)-1][labelCol])
 		}
@@ -1379,7 +1385,7 @@ func HandleSlashCommand(input string) {
 				ui.PrintInfo("No active dataframe or connections to describe.")
 				return
 			}
-			
+
 			err := survey.AskOne(&survey.Select{
 				Message: "Select target to describe:",
 				Options: options,
@@ -1431,12 +1437,12 @@ func HandleSlashCommand(input string) {
 
 		if len(parts) > 1 {
 			query := strings.ToLower(strings.Join(parts[1:], " "))
-			
+
 			// Simple search logic: find sections containing the query
 			// We split by "###" to get command groups
 			sections := strings.Split(helpManual, "###")
 			var filtered []string
-			
+
 			// Always include the header if it matches or just to keep context
 			header := sections[0]
 			if strings.Contains(strings.ToLower(header), query) {
@@ -1446,7 +1452,7 @@ func HandleSlashCommand(input string) {
 			found := false
 			for i := 1; i < len(sections); i++ {
 				if strings.Contains(strings.ToLower(sections[i]), query) {
-					filtered = append(filtered, "###" + sections[i])
+					filtered = append(filtered, "###"+sections[i])
 					found = true
 				}
 			}
@@ -1482,10 +1488,10 @@ func HandleSlashCommand(input string) {
 			"/debug", "/setup", "/exit", "/quit", "/model", "/profile",
 			"/sessions", "/session", "/describe", "/privacy", "/clear", "/help",
 		}
-		
+
 		bestMatch := ""
 		minDist := 3 // Max distance to be considered a suggestion
-		
+
 		for _, ac := range allCmds {
 			dist := levenshtein(cmd, ac)
 			if dist < minDist {
@@ -1493,7 +1499,7 @@ func HandleSlashCommand(input string) {
 				bestMatch = ac
 			}
 		}
-		
+
 		if bestMatch != "" {
 			ui.PrintError(fmt.Sprintf("Unknown command: '%s'. Did you mean '%s'?", cmd, bestMatch))
 		} else {

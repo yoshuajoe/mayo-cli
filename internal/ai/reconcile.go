@@ -3,14 +3,14 @@ package ai
 import (
 	"context"
 	"fmt"
-	"mayo-cli/internal/ui"
-	"strings"
 	"github.com/AlecAivazis/survey/v2"
+	"mayo-cli/internal/config"
 	"mayo-cli/internal/db"
+	"mayo-cli/internal/ui"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
-	"mayo-cli/internal/config"
 )
 
 func (o *Orchestrator) Reconcile(ctx context.Context, alias1, alias2 string) (string, error) {
@@ -22,8 +22,12 @@ func (o *Orchestrator) Reconcile(ctx context.Context, alias1, alias2 string) (st
 	}
 
 	// 2. Load schemas if not present
-	if conn1.Schema == nil { o.LoadMetadata(alias1) }
-	if conn2.Schema == nil { o.LoadMetadata(alias2) }
+	if conn1.Schema == nil {
+		o.LoadMetadata(alias1)
+	}
+	if conn2.Schema == nil {
+		o.LoadMetadata(alias2)
+	}
 
 	ui.RenderStep("⚖️", fmt.Sprintf("Assessing relationship between '%s' and '%s'...", alias1, alias2))
 
@@ -75,7 +79,7 @@ JOIN_KEYS: [Comma separated keys, e.g. date, amount, description]`, alias1, sche
 
 	// Phase 2: Discrepancy detection
 	ui.RenderStep("🔍", "Searching for discrepancies...")
-	
+
 	reconPrompt := fmt.Sprintf(`Create a SQL query (SQLite dialect) that reconciles Table A (%s.%s) and Table B (%s.%s).
 Match them using these keys: %s.
 The query should return:
@@ -111,7 +115,7 @@ ONLY return the SQL block.`, alias1, table1, alias2, table2, keys, alias1, alias
 	// Phase 3: Suggest Resolutions (Git-like)
 	ui.RenderSeparator()
 	ui.PrintInfo("--- RECONCILIATION SUMMARY ---")
-	
+
 	// Count statuses
 	statusIdx := -1
 	for i, c := range cols {
@@ -183,7 +187,7 @@ ONLY return the SQL block.`, alias1, table1, alias2, table2, keys, alias1, alias
 
 	// For each discrepancy type, ask for a rule
 	ui.RenderStep("🤖", "Analyzing discrepancies for resolution rules...")
-	
+
 	sampleLimit := 10
 	if len(selectedMismatches) < sampleLimit {
 		sampleLimit = len(selectedMismatches)
@@ -211,7 +215,7 @@ SQL_FRAG: [SQL CASE WHEN fragment or logic to reach Golden Record]`, table1, tab
 
 	var confirmFinal bool
 	survey.AskOne(&survey.Confirm{Message: "Do you want to apply these suggestions and create a 'Golden' dataframe?", Default: true}, &confirmFinal)
-	
+
 	if confirmFinal {
 		ui.RenderStep("🏗️", "Building Golden Record dataframe...")
 		goldenPrompt := fmt.Sprintf(`Using the reconciliation query results, write a final SELECT statement that produces a "Golden Record".
@@ -237,7 +241,7 @@ Return ONLY the SQL block.`, resResp, alias1, table1, alias2, table2, keys, alia
 			return "", err
 		}
 		goldenSQL := extractSQL(goldenResp)
-		
+
 		// If we had selected specific rows, we should ideally filter the query.
 		// For now, if partial selection, we'll try to refine the query or inform the user.
 		if reconChoice == "Select Specific Rows" {
@@ -300,7 +304,7 @@ func selectMismatchesViaEditor(cols []string, mismatches [][]string) ([][]string
 			if len(parts) > 1 {
 				idPart := strings.ToUpper(strings.TrimSpace(parts[0]))
 				var idx int
-				// Use Sscanf but handle the [X] prefix separately if needed, 
+				// Use Sscanf but handle the [X] prefix separately if needed,
 				// or just extract the number after ROW_
 				rowParts := strings.Split(idPart, "ROW_")
 				if len(rowParts) > 1 {
@@ -334,7 +338,7 @@ func buildReconSummary(alias1, alias2, table1, table2 string, stats map[string]i
 		sb.WriteString("## Discrepancies Sample\n")
 		sb.WriteString("| " + strings.Join(cols, " | ") + " |\n")
 		sb.WriteString("| " + strings.Repeat("--- | ", len(cols)) + "\n")
-		
+
 		limit := 50
 		if len(mismatches) < limit {
 			limit = len(mismatches)

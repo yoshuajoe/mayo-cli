@@ -47,10 +47,10 @@ func main() {
 	// 4. Install
 	fmt.Printf("🚀 Installing to: %s\n", goBin)
 	os.MkdirAll(goBin, 0755)
-	
+
 	src := filepath.Join("bin", binName)
 	dst := filepath.Join(goBin, binName)
-	
+
 	input, _ := os.ReadFile(src)
 	err = os.WriteFile(dst, input, 0755)
 	if err != nil {
@@ -66,7 +66,7 @@ func main() {
 	os.MkdirAll(filepath.Join(configRoot, "data"), 0755)
 
 	fmt.Println("✅ Installation complete!")
-	
+
 	// 6. Automated PATH Setup
 	fmt.Println("\n🛠️  Setting up system PATH...")
 	if runtime.GOOS == "windows" {
@@ -107,4 +107,3 @@ func main() {
 		fmt.Println("Please RESTART your terminal or 'source' your profile to use 'mayo'.")
 	}
 }
-

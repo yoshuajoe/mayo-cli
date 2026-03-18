@@ -2,10 +2,10 @@ package cmd
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"mayo-cli/internal/config"
 	"mayo-cli/internal/session"
+	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 )

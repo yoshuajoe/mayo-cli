@@ -12,8 +12,8 @@ import (
 
 	"mayo-cli/internal/config"
 
-	"github.com/xuri/excelize/v2"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/xuri/excelize/v2"
 )
 
 // Frame represents a saved dataframe
@@ -234,7 +234,7 @@ func ExportExcel(name string, path string) error {
 	sheet := "Sheet1"
 	f.SetSheetName("Sheet1", name)
 	sheet = name
-	
+
 	// Headers
 	for i, col := range columns {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 1)

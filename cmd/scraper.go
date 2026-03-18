@@ -83,7 +83,7 @@ var listScrapersCmd = &cobra.Command{
 		for id, s := range manager.Scrapers {
 			// Fetch fresh status for each
 			status, _ := client.GetScraperStatus(context.Background(), id)
-			
+
 			rows = append(rows, []string{
 				id,
 				s.Status,

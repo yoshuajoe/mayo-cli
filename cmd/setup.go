@@ -134,7 +134,7 @@ func RunSetup() {
 			} else if cfg.AIProfiles[i].DefaultModel == "" {
 				cfg.AIProfiles[i].DefaultModel = defaultModel
 			}
-			
+
 			cfg.AIProfiles[i].Provider = provider
 			cfg.AIProfiles[i].SetAPIKey(apiKey, cfg.UseKeyring)
 			found = true
@@ -151,7 +151,6 @@ func RunSetup() {
 		p.SetAPIKey(apiKey, cfg.UseKeyring)
 		cfg.AIProfiles = append(cfg.AIProfiles, p)
 	}
-
 
 	cfg.ActiveAIProfile = profileName
 

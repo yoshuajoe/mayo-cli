@@ -42,7 +42,7 @@ func TestDetector_Detect(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			entities := detector.Detect(tt.text)
-			
+
 			// Verify each expected entity type is found
 			for _, expType := range tt.expected {
 				found := false

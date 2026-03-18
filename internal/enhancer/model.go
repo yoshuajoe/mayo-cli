@@ -16,12 +16,12 @@ type EnhancerConfig struct {
 }
 
 type EnhancerStatus struct {
-	ID           string    `json:"id"`
-	State        string    `json:"state"` // running, stopped, idle, completed, error
-	Progress     int       `json:"progress"`
-	Total        int       `json:"total"`
-	LastRun      time.Time `json:"last_run"`
-	StartTime    time.Time `json:"start_time"`
-	LastError    string    `json:"last_error,omitempty"`
-	ProcessedCount int     `json:"processed_count"`
+	ID             string    `json:"id"`
+	State          string    `json:"state"` // running, stopped, idle, completed, error
+	Progress       int       `json:"progress"`
+	Total          int       `json:"total"`
+	LastRun        time.Time `json:"last_run"`
+	StartTime      time.Time `json:"start_time"`
+	LastError      string    `json:"last_error,omitempty"`
+	ProcessedCount int       `json:"processed_count"`
 }
