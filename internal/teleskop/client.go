@@ -87,3 +87,12 @@ func (c *Client) GetLogs(ctx context.Context, id string) ([]string, error) {
 		fmt.Sprintf("[%s] %s - Page 2 scraped (200 OK)", id, time.Now().Add(-40*time.Minute).Format(time.RFC3339)),
 	}, nil
 }
+
+// SearchInternet is a boilerplate for the upcoming real-time search feature via Teleskop API.
+// It will be used by the AI Orchestrator when it decides it needs real-time context.
+func (c *Client) SearchInternet(ctx context.Context, query string) (string, error) {
+	// TODO: Implement actual API call to Teleskop's real-time search endpoint
+	// For now, return a placeholder text
+	return fmt.Sprintf("Mock search result for: %s\n\n[Teleskop API integration pending]", query), nil
+}
+

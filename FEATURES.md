@@ -88,6 +88,10 @@ List of features and the development roadmap for Mayo CLI to achieve production 
 *   **Status**: 💎 Done 
 *   **Feature**: Background scraper integration (via Teleskop.id) that feeds directly into Mayo's SQLite for real-time analysis.
 
+### ✅ Caddy & HTTPS Proxy (`/telegram`)
+*   **Status**: 💎 Done
+*   **Feature**: Automatic Caddyfile generation and setup for secure HTTPS endpoints, allowing Mayo to be safely exposed for Telegram bot integrations.
+
 ---
 
 > *This document is updated periodically as a development guide for Mayo CLI.*

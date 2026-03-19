@@ -32,7 +32,12 @@ func NewManager() *Manager {
 }
 
 func (m *Manager) Spawn(sessionID string, port int, token string) (int, error) {
-	// 1. Prepare command
+	// 1. Port conflict check
+	if m.IsPortInUse(port) {
+		return 0, fmt.Errorf("port %d is already in use. Please stop the existing server first using '/serve stop'", port)
+	}
+
+	// 2. Prepare command
 	exe, _ := os.Executable()
 	args := []string{"serve", "--port", strconv.Itoa(port)}
 	if sessionID != "" {
@@ -56,12 +61,15 @@ func (m *Manager) Spawn(sessionID string, port int, token string) (int, error) {
 	cmd := exec.Command(exe, args...)
 	cmd.Stdout = f
 	cmd.Stderr = f
+	cmd.Stdin = nil
 
-	// 2. Start process in background
+	// 3. Start process in background
 	if runtime.GOOS == "windows" {
 		// Windows specific backgrounding if needed
 	} else {
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Setsid: true,
+		}
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -70,7 +78,7 @@ func (m *Manager) Spawn(sessionID string, port int, token string) (int, error) {
 	}
 	f.Close()
 
-	// 3. Register server
+	// 4. Register server
 	s := RunningServer{
 		PID:       cmd.Process.Pid,
 		SessionID: displayID,
@@ -81,6 +89,7 @@ func (m *Manager) Spawn(sessionID string, port int, token string) (int, error) {
 
 	return cmd.Process.Pid, nil
 }
+
 
 func (m *Manager) List() []RunningServer {
 	var active []RunningServer
@@ -99,13 +108,13 @@ func (m *Manager) List() []RunningServer {
 	return active
 }
 
-func (m *Manager) Stop(idOrPort string) error {
+func (m *Manager) Stop(idOrSession string) error {
 	all := m.loadAll()
 	var remaining []RunningServer
 	var target *RunningServer
 
 	for _, s := range all {
-		if strconv.Itoa(s.Port) == idOrPort || s.SessionID == idOrPort || fmt.Sprintf("%d", s.PID) == idOrPort {
+		if s.SessionID == idOrSession || fmt.Sprintf("%d", s.PID) == idOrSession || strconv.Itoa(s.Port) == idOrSession {
 			target = &s
 		} else {
 			remaining = append(remaining, s)
@@ -144,6 +153,14 @@ func (m *Manager) isProcessRunning(pid int) bool {
 	err = process.Signal(syscall.Signal(0))
 	return err == nil
 }
+
+func (m *Manager) IsPortInUse(port int) bool {
+	addr := fmt.Sprintf(":%d", port)
+	cmd := exec.Command("lsof", "-i", addr)
+	out, _ := cmd.CombinedOutput()
+	return len(out) > 0
+}
+
 
 func (m *Manager) register(s RunningServer) {
 	all := m.loadAll()

@@ -122,6 +122,10 @@ func (s *Server) getOrchestrator(sessionID string) (*ai.Orchestrator, error) {
 		return nil, fmt.Errorf("session not found")
 	}
 
+	if s.Config == nil {
+		return nil, fmt.Errorf("server config not loaded")
+	}
+
 	// 3. Initialize AI Profile for this session
 	var activeProf *config.AIProfile
 	for i, p := range s.Config.AIProfiles {
@@ -133,6 +137,7 @@ func (s *Server) getOrchestrator(sessionID string) (*ai.Orchestrator, error) {
 	if activeProf == nil {
 		return nil, fmt.Errorf("no active AI profile found")
 	}
+
 
 	apiKey := activeProf.GetAPIKey(s.Config.UseKeyring)
 	aiClient := ai.NewClient(activeProf.Provider, apiKey, activeProf.DefaultModel)

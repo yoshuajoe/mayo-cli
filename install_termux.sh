@@ -16,16 +16,16 @@ termux-setup-storage
 
 # 3. Build the application
 echo "🔨 Building Mayo binary..."
-go build -o insight main.go
+go build -o mayo main.go
 
 # 4. Create a shortcut in /usr/bin for easy access
 echo "🔧 Creating shortcut..."
-chmod +x insight
-cp insight $PREFIX/bin/insight
+chmod +x mayo
+cp mayo $PREFIX/bin/mayo
 
 echo "---"
 echo "✅ Installation Complete!"
-echo "💡 You can now run the app from anywhere by simply typing: insight"
+echo "💡 You can now run the app from anywhere by simply typing: mayo"
 echo ""
 echo "📝 Quick Tips for Android:"
 echo "1. Use /setup to configure your AI profile."
