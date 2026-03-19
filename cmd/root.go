@@ -163,33 +163,13 @@ func StartInteractiveShell() {
 		ui.RenderStep("✨", "Starting a fresh research session...")
 	}
 
-	if cfg == nil || len(cfg.AIProfiles) == 0 {
-		ui.PrintInfo("Welcome! No configuration found. Run '/wizard' for a guided onboarding or '/setup' for direct setup.")
-	} else {
+	if cfg != nil && len(cfg.AIProfiles) > 0 {
 		InitAIClient(cfg)
-
-		// Auto-connect for resumed sessions only
-		var targets []string
-		if !isNewSession {
-			if len(GlobalSess.ConnectedProfiles) > 0 {
-				targets = GlobalSess.ConnectedProfiles
-			} else if cfg.ActiveDSProfile != "" {
-				targets = []string{cfg.ActiveDSProfile}
-			}
-		}
-
-		if len(targets) > 0 && GlobalAI != nil {
-			for _, targetDS := range targets {
-				for _, d := range cfg.DSProfiles {
-					if d.Name == targetDS {
-						ui.RenderStep("🔌", fmt.Sprintf("Auto-connecting to saved source: %s [%s]", d.Name, d.Driver))
-						HandleConnect(d.Driver, d.DSN, "", d.Name)
-						break
-					}
-				}
-			}
-		}
+		AutoConnectSession(cfg, GlobalSess, isNewSession)
+	} else {
+		ui.PrintInfo("Welcome! No configuration found. Run '/wizard' for a guided onboarding or '/setup' for direct setup.")
 	}
+
 
 	// Setup Readline with autocomplete
 	completer := readline.NewPrefixCompleter(
@@ -199,6 +179,9 @@ func StartInteractiveShell() {
 			readline.PcItem("file"),
 			readline.PcItem("folder"),
 		),
+		readline.PcItem("/s"),
+		readline.PcItem("/c"),
+		readline.PcItem("/q"),
 		readline.PcItem("/model"),
 		readline.PcItem("/profile",
 			readline.PcItem("ai"),
@@ -206,6 +189,7 @@ func StartInteractiveShell() {
 		),
 		readline.PcItem("/context"),
 		readline.PcItem("/setup"),
+		readline.PcItem("/wizard"),
 		readline.PcItem("/sessions",
 			readline.PcItem("create"),
 			readline.PcItem("clear"),
@@ -229,6 +213,7 @@ func StartInteractiveShell() {
 		readline.PcItem("/privacy"),
 		readline.PcItem("/debug"),
 		readline.PcItem("/describe"),
+		readline.PcItem("/annotate"),
 		readline.PcItem("/df",
 			readline.PcItem("save"),
 			readline.PcItem("commit"),
@@ -268,10 +253,16 @@ func StartInteractiveShell() {
 		readline.PcItem("/this"),
 		readline.PcItem("/scan"),
 		readline.PcItem("/reconcile"),
+		readline.PcItem("/compare"),
 		readline.PcItem("/plot"),
 		readline.PcItem("/analyst"),
+		readline.PcItem("/mayo"),
 		readline.PcItem("/changelog"),
 		readline.PcItem("/help"),
+		readline.PcItem("/telegram",
+			readline.PcItem("prepare"),
+			readline.PcItem("exec"),
+		),
 		readline.PcItem("/exit"),
 		readline.PcItem("/quit"),
 	)
@@ -342,9 +333,22 @@ func StartInteractiveShell() {
 		}
 
 		if GlobalOrchestrator == nil {
-			ui.PrintError("Not connected. Use /connect to link a database OR /knowledge to index documents.")
-			continue
+			if GlobalAI != nil {
+				// Initialize for Pure Knowledge (RAG) Mode
+				GlobalOrchestrator = &ai.Orchestrator{
+					AI:             GlobalAI,
+					Connections:    make(map[string]*ai.DBConnection),
+					Session:        GlobalSess,
+					DefaultLimit:   cfg.DefaultLimit,
+					Interactive:    cfg.Interactive,
+					AnalystEnabled: cfg.AnalystEnabled,
+				}
+			} else {
+				ui.PrintError("Not connected. Use /connect to link a database OR /knowledge to index documents.")
+				continue
+			}
 		}
+
 
 		fmt.Println(ui.StyleStatus.Render("🤖 Thinking..."))
 		resp, err := GlobalOrchestrator.ProcessQuery(context.Background(), input)
@@ -408,7 +412,60 @@ func InitAIClient(cfg *config.Config) {
 	}
 }
 
+func AutoConnectSession(cfg *config.Config, sess *session.Session, isNewSession bool) {
+	if GlobalAI == nil || sess == nil || cfg == nil {
+		return
+	}
+
+	// Always ensure GlobalOrchestrator is initialized for the session
+	if GlobalOrchestrator == nil {
+		GlobalOrchestrator = &ai.Orchestrator{
+			AI:             GlobalAI,
+			Connections:    make(map[string]*ai.DBConnection),
+			Session:        sess,
+			DefaultLimit:   cfg.DefaultLimit,
+			Interactive:    cfg.Interactive,
+			AnalystEnabled: cfg.AnalystEnabled,
+		}
+	} else {
+		GlobalOrchestrator.Session = sess
+	}
+
+	// For resumed sessions, auto-reconnect sources
+	if !isNewSession {
+		var targets []string
+		if len(sess.ConnectedProfiles) > 0 {
+			targets = sess.ConnectedProfiles
+		} else if cfg.ActiveDSProfile != "" {
+			targets = []string{cfg.ActiveDSProfile}
+		}
+
+		for _, targetDS := range targets {
+			// Skip if already connected
+			connected := false
+			for _, conn := range GlobalOrchestrator.Connections {
+				if conn.Source == targetDS {
+					connected = true
+					break
+				}
+			}
+			if connected {
+				continue
+			}
+
+			for _, d := range cfg.DSProfiles {
+				if d.Name == targetDS {
+					ui.RenderStep("🔌", fmt.Sprintf("Auto-connecting to saved source: %s [%s]", d.Name, d.Driver))
+					HandleConnect(d.Driver, d.DSN, "", d.Name)
+					break
+				}
+			}
+		}
+	}
+}
+
 func HandleSlashCommand(input string) {
+
 	parts, err := shellquote.Split(input)
 	if err != nil {
 		ui.PrintError(fmt.Sprintf("Invalid format: %v", err))
@@ -1062,7 +1119,7 @@ func HandleSlashCommand(input string) {
 			ui.PrintInfo("Usage:\n  /df commit [name] — persist memory to SQLite\n  /df list           — list saved dataframes\n  /df load <name>    — load into memory\n  /df reset          — clear memory (back to DB mode)\n  /df status         — show working copy status\n  /df export [name] [format] — export as markdown/csv/excel/json\n  /df delete <name>  — remove dataframe")
 		}
 
-	case "/connect":
+	case "/connect", "/c":
 		var driver, dsn, alias string
 		if len(parts) >= 3 {
 			driver = parts[1]
@@ -1099,7 +1156,7 @@ func HandleSlashCommand(input string) {
 		if driver != "" && dsn != "" {
 			HandleConnect(driver, dsn, alias, "")
 		}
-	case "/reconcile":
+	case "/reconcile", "/compare":
 		if GlobalOrchestrator == nil {
 			ui.PrintError("Not connected.")
 			return
@@ -1154,10 +1211,40 @@ func HandleSlashCommand(input string) {
 		}
 	case "/knowledge":
 		if len(parts) < 2 {
-			ui.PrintInfo("Usage: /knowledge [file]")
+			ui.PrintInfo("Usage:\n  /knowledge [file] — index PDF/MD/TXT for RAG\n  /knowledge against [file] — compare document against current knowledge base")
 			return
 		}
-		HandleKnowledge(parts[1])
+
+		if parts[1] == "against" {
+			if len(parts) < 3 {
+				ui.PrintInfo("Usage: /knowledge against [file]")
+				return
+			}
+			filePath := parts[2]
+			doc, err := knowledge.LoadKnowledge(filePath)
+			if err != nil {
+				ui.PrintError(err.Error())
+				return
+			}
+
+			if GlobalOrchestrator == nil {
+				ui.PrintError("Mayo is not initialized. Load a knowledge base first with /knowledge.")
+				return
+			}
+
+			ui.RenderStep("📄", fmt.Sprintf("Reading document for comparison: %s (%d characters)", filePath, len(doc.Content)))
+			
+			prompt := fmt.Sprintf("Please analyze this document against the currently loaded knowledge base (RAG). Compare requirements, check for compliance, and identify any gaps or misalignments.\n\nDOCUMENT: %s\n\nCONTENT:\n%s", doc.Source, doc.Content)
+			
+			session.LogToSession(GlobalSess.ID, fmt.Sprintf("User requested against check: %s", filePath))
+			
+			_, err = GlobalOrchestrator.ProcessQuery(context.Background(), prompt)
+			if err != nil {
+				ui.PrintError(err.Error())
+			}
+		} else {
+			HandleKnowledge(parts[1])
+		}
 	case "/context":
 		cfg, _ := config.LoadConfig()
 		if len(parts) < 2 {
@@ -1293,10 +1380,35 @@ func HandleSlashCommand(input string) {
 			status = "ENABLED (Prompts will be shown)"
 		}
 		ui.PrintSuccess(fmt.Sprintf("Debug Mode is now %s", status))
-	case "/setup":
+	case "/setup", "/s":
 		RunSetup()
-	case "/exit", "/quit":
-		os.Exit(0)
+	case "/mayo":
+		fmt.Printf("\n%s\n", ui.StyleTitle.Render("🐶 MAYO - Senior AI Data Partner"))
+		fmt.Printf("Version : %s\n", version.Version)
+		fmt.Printf("License : MIT (Open Source Core)\n")
+		fmt.Printf("Owner   : Teleskop.id\n\n")
+
+		fmt.Printf("%s\n", ui.StyleHighlight.Render("--- SYSTEM STATUS ---"))
+		if GlobalSess != nil {
+			fmt.Printf("Active Session : %s (%s)\n", GlobalSess.ID[:8], GlobalSess.Summary)
+		} else {
+			fmt.Printf("Active Session : None\n")
+		}
+
+		if GlobalOrchestrator != nil {
+			fmt.Printf("Connected Sources : %d\n", len(GlobalOrchestrator.Connections))
+			for alias, conn := range GlobalOrchestrator.Connections {
+				fmt.Printf("  • %s (%s)\n", alias, conn.Driver)
+			}
+		}
+		fmt.Printf("Privacy Mode : ")
+		if privacy.PrivacyMode {
+			fmt.Printf("%s\n", ui.StyleSuccess.Render("ON (Protected)"))
+		} else {
+			fmt.Printf("%s\n", ui.StyleError.Render("OFF (Raw Mode)"))
+		}
+		fmt.Printf("Storage Path : %s\n", config.GetConfigDir())
+		fmt.Println()
 	case "/model":
 		if GlobalAI == nil {
 			ui.PrintError("AI Client not initialized. Run /setup first.")
@@ -1403,11 +1515,13 @@ func HandleSlashCommand(input string) {
 				if err == nil {
 					GlobalSess = s
 					session.InitVault(s) // Initialize vault with this session's key
-					if GlobalOrchestrator != nil {
-						GlobalOrchestrator.Session = s
-					}
 					ui.PrintSuccess(fmt.Sprintf("Switched to session: %s", s.ID[:8]))
+					
+					// Reconnect previous sources associated with this session
+					cfg, _ := config.LoadConfig()
+					AutoConnectSession(cfg, GlobalSess, false)
 				}
+
 			}
 			return
 		}
@@ -1523,15 +1637,88 @@ func HandleSlashCommand(input string) {
 			ui.RenderMarkdown(resp)
 		}
 	case "/privacy":
-		cfg, _ := config.LoadConfig()
 		privacy.PrivacyMode = !privacy.PrivacyMode
-		cfg.PrivacyMode = privacy.PrivacyMode
-		config.SaveConfig(cfg)
-		status := "ON (PII Masking Active)"
+		cfg, _ := config.LoadConfig()
+		if cfg != nil {
+			cfg.PrivacyMode = privacy.PrivacyMode
+			config.SaveConfig(cfg)
+		}
+		status := "ON (PII Masking Active - Your data is protected before cloud transit)"
 		if !privacy.PrivacyMode {
-			status = "OFF (PII Masking Disabled)"
+			status = "OFF (Raw Data Mode - Use with caution!)"
 		}
 		ui.PrintSuccess(fmt.Sprintf("Privacy Mode is now %s", status))
+	case "/wizard":
+		RunWizard()
+	case "/scraper":
+		if len(parts) < 2 {
+			ui.PrintInfo("Usage: /scraper [spawn|list|status|logs|stop|delete|usage|summary|head|tail]")
+			return
+		}
+		sub := parts[1]
+		args := parts[2:]
+		switch sub {
+		case "spawn":
+			if len(args) < 1 {
+				ui.PrintError("Keyword required for spawn.")
+				return
+			}
+			spawnCmd.ParseFlags(args)
+			spawnCmd.Run(spawnCmd, args)
+		case "list":
+			listScrapersCmd.Run(listScrapersCmd, args)
+		case "status":
+			statusCmd.Run(statusCmd, args)
+		case "logs":
+			logsCmd.Run(logsCmd, args)
+		case "stop":
+			stopCmd.Run(stopCmd, args)
+		case "delete":
+			deleteCmd.Run(deleteCmd, args)
+		case "usage":
+			usageCmd.Run(usageCmd, args)
+		case "summary":
+			summaryScraperCmd.Run(summaryScraperCmd, args)
+		case "head":
+			headScraperCmd.Run(headScraperCmd, args)
+		case "tail":
+			tailScraperCmd.Run(tailScraperCmd, args)
+		default:
+			ui.PrintInfo("Unknown scraper subcommand.")
+		}
+	case "/annotate":
+		if len(parts) < 3 {
+			ui.PrintInfo("Usage: /annotate [alias].[table] [description]")
+			return
+		}
+		annotateCmd.Run(annotateCmd, parts[1:])
+	case "/history":
+		if len(parts) < 2 {
+			if GlobalSess != nil {
+				historyCmd.Run(historyCmd, []string{GlobalSess.ID})
+			} else {
+				ui.PrintError("No active session. Usage: /history [session_id]")
+			}
+			return
+		}
+		historyCmd.Run(historyCmd, parts[1:])
+	case "/audit":
+		if GlobalSess == nil {
+			ui.PrintError("No active session to audit.")
+			return
+		}
+		auditPath := filepath.Join(config.GetConfigDir(), "sessions", GlobalSess.ID, "audit.log")
+		if _, err := os.Stat(auditPath); os.IsNotExist(err) {
+			ui.PrintInfo("No audit logs found for this session yet.")
+			return
+		}
+		
+		ui.PrintInfo(fmt.Sprintf("Showing last 100 lines of prompt audit log for transparency:\n(Path: %s)", auditPath))
+		cmd := exec.Command("tail", "-n", "100", auditPath)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Run()
+		ui.PrintInfo("\nNote: These are the exact prompts sent to the LLM. Data in «TOKEN_X» format indicates Mayo was protecting your privacy.")
 	case "/analyst":
 		cfg, _ := config.LoadConfig()
 		cfg.AnalystEnabled = !cfg.AnalystEnabled
@@ -1571,8 +1758,12 @@ func HandleSlashCommand(input string) {
 			pid, err := mgr.Spawn("", port, token)
 			if err != nil {
 				ui.PrintError(err.Error())
+				if strings.Contains(err.Error(), "already in use") {
+					ui.PrintInfo("Try stopping the existing server first: /serve stop 8080")
+				}
 			} else {
 				ui.PrintSuccess(fmt.Sprintf("Master API Server started in background (PID: %d)", pid))
+				ui.PrintInfo("Note: The server is now detached and will continue running even if you close this CLI.")
 				
 				// CURL Example
 				sessionID := "SESSION_ID"
@@ -1587,6 +1778,7 @@ func HandleSlashCommand(input string) {
 				fmt.Printf("curl -X POST http://localhost:%d/v1/%s/query %s-H \"Content-Type: application/json\" -d '{\"query\": \"Hello Mayo!\"}'\n\n", port, sessionID, authHeader)
 				ui.PrintInfo("You can query ANY session via http://localhost:" + strconv.Itoa(port) + "/v1/:session_id/query")
 			}
+
 
 		case "status":
 			servers := mgr.List()
@@ -1620,7 +1812,7 @@ func HandleSlashCommand(input string) {
 
 		case "stop":
 			if len(parts) < 3 {
-				ui.PrintInfo("Usage: /serve stop [port|session_id]")
+				ui.PrintInfo("Usage: /serve stop [session_id|port]")
 				return
 			}
 			if err := mgr.Stop(parts[2]); err != nil {
@@ -1630,8 +1822,12 @@ func HandleSlashCommand(input string) {
 			}
 		}
 
+
 	case "/clear":
 		ui.ClearScreen()
+		return
+	case "/telegram":
+		HandleTelegramCommand(parts)
 		return
 	case "/help":
 		helpManual := getHelpManual()
@@ -1682,12 +1878,15 @@ func HandleSlashCommand(input string) {
 
 		ui.RenderMarkdown(helpManual)
 		return
+	case "/exit", "/quit", "/q":
+		os.Exit(0)
 	default:
 		allCmds := []string{
-			"/export", "/share", "/this", "/scan", "/sources", "/df", "/connect",
-			"/reconcile", "/disconnect", "/knowledge", "/context", "/changelog",
-			"/debug", "/setup", "/exit", "/quit", "/model", "/profile",
+			"/export", "/share", "/this", "/scan", "/sources", "/df", "/connect", "/c",
+			"/reconcile", "/compare", "/disconnect", "/knowledge", "/context", "/changelog",
+			"/debug", "/setup", "/s", "/exit", "/quit", "/q", "/model", "/profile",
 			"/sessions", "/session", "/describe", "/privacy", "/clear", "/help", "/serve",
+			"/mayo", "/wizard", "/scraper", "/annotate", "/history", "/telegram",
 		}
 
 		bestMatch := ""
@@ -1749,7 +1948,7 @@ Mayo is your autonomous partner for deep data research and analysis. It combines
 ## 🛠️ CORE COMMANDS (Manual Pages)
 
 ### 🔌 Connectivity & Data Sources
-- **/connect [driver] [dsn] [alias]**
+- **/connect [driver] [dsn] [alias]** (Shortcut: **/c**)
   Creates a new connection to a data source.
   - **Drivers**: 
     - ` + "`postgres`" + `: Use for PostgreSQL databases.
@@ -1772,8 +1971,13 @@ Mayo is your autonomous partner for deep data research and analysis. It combines
 - **/scan**
   Forces a manual schema re-scan and metadata enrichment for all connected sources. Use this if the database schema has changed while Mayo is running.
 
+- **/annotate [alias].[table/column] [description]**
+  Adds custom AI-readable descriptions to your schema to improve query accuracy.
+
 ### 📊 Dataframes (In-Memory Processing)
 Mayo can "stage" query results into memory for further AI analysis or cross-source joins.
+When in Dataframe Mode, your prompt will show a 📊 icon.
+
 - **/df list**
   List all persisted dataframes saved in the local SQLite storage.
 - **/df load [name|knowledge:session_id]**
@@ -1786,7 +1990,7 @@ Mayo can "stage" query results into memory for further AI analysis or cross-sour
 - **/df reset**
   Clear the active memory and return Mayo to "Pure Database Mode".
 - **/df export [name]**
-  Export a saved dataframe directly to a Markdown file.
+  Export a saved dataframe directly to a Markdown/CSV/Excel/JSON file.
 - **/enhance start**
   AI-powered data enrichment for SQLite. Add new columns based on AI analysis of existing row data. (Requires Dataframe Mode)
 
@@ -1794,12 +1998,15 @@ Mayo can "stage" query results into memory for further AI analysis or cross-sour
   Generates a high-level statistical summary (Pandas-style) for a data source or the active dataframe.
   - **Sample**: ` + "`/describe main_db`" + ` or ` + "`/describe df`" + `
 
-- **/reconcile <alias1> <alias2>**
-  AI-powered reconciliation between two data sources. Mayo will look for mapping patterns and identify discrepancies.
+- **/reconcile <alias1> <alias2>** (Alias: **/compare**)
+  AI-powered comparison/reconciliation between two data sources. Mayo will look for mapping patterns and identify discrepancies.
 
 ### 🧠 AI Intelligence & Configuration
-- **/setup**
+- **/setup** (Shortcut: **/s**)
   Interactive wizard to configure AI Providers (Gemini, OpenAI, Groq, Anthropic) and Models.
+
+- **/wizard**
+  Starts the guided onboarding process for new users.
 
 - **/model**
   Selectively change the LLM model for the current session without changing the permanent profile.
@@ -1813,10 +2020,17 @@ Mayo can "stage" query results into memory for further AI analysis or cross-sour
   - **Sample**: ` + "`/context \"Always use Indonesian for final reports\"`" + `
   - **Sample**: ` + "`/context clear`" + ` to remove current context.
 
+- **/analyst**
+  Toggles AI Analyst mode to automatically provide insights after every query.
+
 ### 📚 Knowledge Base (RAG)
 - **/knowledge [path]**
   Parses and indexes external documents (` + "`.pdf, .md, .txt`" + `) into the local vector database for semantic search.
   - **Note**: If Privacy Mode is **ON**, all PII (Emails, Phones, etc.) is masked *per-chunk* before being sent to external AI APIs for embedding generation or stored in the database.
+
+- **/knowledge against [path]**
+  Compares a specific document (e.g. your proposal) against the previously indexed knowledge base (e.g. an RFP). Mayo will identify gaps and compliance issues.
+  - **Sample**: ` + "`/knowledge against proposal_v1.pdf`" + `
 
 - **/privacy**
   Toggle PII Masking. When ON, Mayo masks Emails, Phones, and Credentials in both inputs and outputs. Default is **ON**.
@@ -1838,6 +2052,12 @@ Mayo can "stage" query results into memory for further AI analysis or cross-sour
 - **/share [filename.md]**
   Uses AI to synthesize your entire session into a professional Executive Report. Useful for sending findings to stakeholders.
 
+- **/audit**
+  View the prompt audit log for transparency and security review.
+
+- **/history**
+  View the chat history of the current or specified session.
+
 ### 🛸 API & Utilities
 ### 📡 Mayo API & Serving (v1.4.0)
 You can expose Mayo's brain as a REST API to be used by other applications (Dashboards, Slack bots, etc.).
@@ -1852,15 +2072,25 @@ You can expose Mayo's brain as a REST API to be used by other applications (Dash
   - **Endpoints**: ` + "`POST /v1/query`" + `, ` + "`GET /v1/status`" + `.
   - **Auth**: Bearer token is required if configured.
 
+- **/mayo**
+  Displays Mayo's version, license, and current system health status.
+
 - **/this**
   A "God Mode" view of the current state: session IDs, file paths, active schemas, and PII vault stats.
+
 - **/clear**
   Clears the terminal screen for a fresh workspace.
+
 - **/changelog**
   View the latest updates and feature additions in Mayo.
 
+- **/telegram prepare**
+  Interactive setup for Caddy/HTTPS.
+- **/telegram exec**
+  Start Caddy in the background.
+
 ### 🚪 Exit & Quit
-- **/exit** or **/quit** - Safely terminates the CLI session.
+- **/q**, **/exit**, or **/quit** - Safely terminates the CLI session.
 
 ---
 

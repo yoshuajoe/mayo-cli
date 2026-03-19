@@ -16,6 +16,11 @@ build:
 	@$(GO) build -o $(BUILD_DIR)/$(BINARY_NAME) main.go
 	@echo "✅ Build complete: $(BUILD_DIR)/$(BINARY_NAME)"
 
+# Build for all distributions (Win, Linux, Mac - Intel & ARM)
+build-dist:
+	@chmod +x scripts/build_all.sh
+	@./scripts/build_all.sh
+
 # Run the application
 run:
 	@$(GO) run main.go
@@ -77,6 +82,7 @@ help:
 	@echo "  make setup-env  - Fix permissions and check prerequisites"
 	@echo "  make setup-all  - Run cross-platform installer (Win/Mac/Linux)"
 	@echo "  make clean      - Remove build artifacts"
+	@echo "  make build-dist - Build for all supported distributions (Win/Mac/Linux)"
 	@echo "  make install    - Install binary to GOPATH/bin"
 	@echo "  make uninstall  - Remove binary from GOPATH/bin"
 	@echo "  make release    - Run release automation (version, changelog, tags)"

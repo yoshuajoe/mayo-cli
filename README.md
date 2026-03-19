@@ -82,6 +82,7 @@ Mayo operates in an interactive shell. Once started, you can type natural langua
 | `/share` | Generate a beautiful markdown research report. |
 | `/privacy` | Toggle Privacy Mode (PII masking). |
 | `/scraper` | Control background data scraping workers. |
+| `/telegram` | Setup Caddy for HTTPS / Telegram webhooks. |
 | `/help` | List all available commands. |
 
 ### Example Workflow

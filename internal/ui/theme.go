@@ -125,7 +125,7 @@ func FormatPrompt(connName string, dfName string, sessionSummary string, isConne
 	p += " " + status
 
 	if dfName != "" {
-		p += " \033[33m[" + dfName + "]\033[0m" // Yellow for dataframe
+		p += " 📊 \033[33m[" + dfName + "]\033[0m" // Yellow for dataframe with icon
 	}
 
 	if sessionSummary != "" {

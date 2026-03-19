@@ -20,6 +20,7 @@ import (
 	"mayo-cli/internal/knowledge"
 	"mayo-cli/internal/privacy"
 	"mayo-cli/internal/session"
+	"mayo-cli/internal/teleskop"
 	"mayo-cli/internal/ui"
 	"os"
 )
@@ -155,13 +156,31 @@ func (o *Orchestrator) ProcessQuery(ctx context.Context, userInput string) (stri
 		systemPrompt = `You are Mayo, an autonomous AI research partner.
 You do NOT have access to any database. Instead, you answer questions based on knowledge documents that have been indexed and provided to you as context below.
 Use the RELEVANT KNOWLEDGE CONTEXT to provide accurate, specific answers. Always cite the source document when referencing specific facts.
-If the knowledge context does not contain enough information, say so clearly.`
+If the knowledge context does not contain enough information, or the user asks about recent events, you can search the internet by outputting EXACTLY <SEARCH>your search query</SEARCH>. The system will fetch the results and give them to you.`
 		if history != "" {
 			systemPrompt += "\n\nPREVIOUS CONVERSATION:\n" + history
 		}
 		if o.UserContext != "" {
 			systemPrompt += "\n\nUSER CONTEXT: " + o.UserContext
 		}
+	}
+
+	// 1. Log user input
+	if o.Session != nil {
+		session.LogToSession(o.Session.ID, fmt.Sprintf("User: %s", userInput))
+	}
+
+	// 🆕 PII PROTECTION: Mask PII (Email, Phone, etc.) before ANY external transit (RAG search OR Final Prompt)
+	safeUserInput := userInput
+	if privacy.ActiveVault != nil && privacy.PrivacyMode {
+		ui.RenderStep("🔐", "Mayo is masking PII (E-mail, Phone, etc.) to keep your data private...")
+		safeUserInput = privacy.ActiveVault.Tokenize(userInput)
+	}
+
+	trimmedInput := strings.TrimSpace(safeUserInput)
+	if isLikelySQL(trimmedInput) {
+		ui.RenderStep("⚡", "Direct SQL detected. Skipping AI analysis...")
+		return o.executeAndAnalyze(ctx, safeUserInput, trimmedInput, "", "", nil)
 	}
 
 	// --- 3.C KNOWLEDGE INTEGRATION (RAG) ---
@@ -171,12 +190,41 @@ If the knowledge context does not contain enough information, say so clearly.`
 		if _, err := os.Stat(sqlitePath); err == nil {
 			if kb, err := sql.Open("sqlite3", sqlitePath); err == nil {
 				defer kb.Close()
-				// Use user input as search query
-				results, _ := knowledge.SearchKnowledge(ctx, kb, o.AI, knowledgeTableName, userInput, 5)
-				if len(results) > 0 {
-					ui.RenderStep("📚", fmt.Sprintf("Retrieved %d relevant knowledge snippets...", len(results)))
+
+				// OPTIMIZATION: If input is long (Doc Comparison / Large Question), 
+				// we perform multi-point searching to ensure better RAG coverage.
+				var searchQueries []string
+				if len(safeUserInput) > 2000 {
+					ui.RenderStep("🧬", "Long input detected. Performing multi-point RAG retrieval...")
+					// 1. Initial part for context
+					searchQueries = append(searchQueries, safeUserInput[:1000])
+					// 2. Middle part for requirements
+					mid := len(safeUserInput) / 2
+					searchQueries = append(searchQueries, safeUserInput[mid-500:mid+500])
+					// 3. Tail part for conclusions
+					searchQueries = append(searchQueries, safeUserInput[len(safeUserInput)-1000:])
+				} else {
+					searchQueries = append(searchQueries, safeUserInput)
+				}
+
+				allResultsMap := make(map[string]bool)
+				var finalResults []string
+
+				for _, sq := range searchQueries {
+					// Use 3-5 results per point for a balanced context
+					res, _ := knowledge.SearchKnowledge(ctx, kb, o.AI, knowledgeTableName, sq, 3)
+					for _, r := range res {
+						if !allResultsMap[r] {
+							allResultsMap[r] = true
+							finalResults = append(finalResults, r)
+						}
+					}
+				}
+
+				if len(finalResults) > 0 {
+					ui.RenderStep("📚", fmt.Sprintf("Retrieved %d relevant knowledge snippets across multiple points...", len(finalResults)))
 					kbCtx := "\n\nRELEVANT KNOWLEDGE CONTEXT (from indexed documents):\n"
-					kbCtx += strings.Join(results, "\n---\n")
+					kbCtx += strings.Join(finalResults, "\n---\n")
 					systemPrompt += kbCtx
 				}
 			}
@@ -185,33 +233,21 @@ If the knowledge context does not contain enough information, say so clearly.`
 
 	ui.RenderStep("🗜️", "Compressing prompt for token efficiency...")
 
-	// 1. Log user input
-	if o.Session != nil {
-		session.LogToSession(o.Session.ID, fmt.Sprintf("User: %s", userInput))
-	}
-
-	trimmedInput := strings.TrimSpace(userInput)
-	if isLikelySQL(trimmedInput) {
-		ui.RenderStep("⚡", "Direct SQL detected. Skipping AI analysis...")
-		return o.executeAndAnalyze(ctx, userInput, trimmedInput, "", "", nil)
-	}
-
 	// 2. Generate SQL from AI
 	if o.AI == nil {
 		return "", fmt.Errorf("AI client not initialized. Please run /setup to configure your AI profile.")
 	}
 	ui.RenderStep("🤖", "Requesting LLM analysis...")
 
-	// Tokenize user input before sending to AI (PII protection)
-	safeUserInput := userInput
-	if privacy.ActiveVault != nil && privacy.PrivacyMode {
-		ui.RenderStep("🔐", "Tokenizing PII in user input...")
-		safeUserInput = privacy.ActiveVault.Tokenize(userInput)
-	}
-
 	if ui.DebugEnabled {
 		ui.RenderDebug("SYSTEM PROMPT", systemPrompt)
 		ui.RenderDebug("USER PROMPT (TOKENIZED)", safeUserInput)
+	}
+
+	// 🆕 AUDIT TRAIL: Log the exact prompts to a secure local file for transparency
+	if o.Session != nil {
+		auditMsg := fmt.Sprintf("AI PROMPT (System):\n%s\n\nAI PROMPT (User):\n%s", systemPrompt, safeUserInput)
+		session.LogToSessionAudit(o.Session.ID, auditMsg)
 	}
 
 	aiResponse, usage, err := o.AI.GenerateResponse(ctx, systemPrompt, safeUserInput)
@@ -226,6 +262,46 @@ If the knowledge context does not contain enough information, say so clearly.`
 	// Detokenize AI response back to original values for user display
 	if privacy.ActiveVault != nil && privacy.PrivacyMode {
 		aiResponse = privacy.ActiveVault.Detokenize(aiResponse)
+	}
+
+	searchQuery := extractSearchQuery(aiResponse)
+	if searchQuery != "" {
+		// Clean the tag from the response for display
+		aiResponseClean := regexp.MustCompile(`(?s)<SEARCH>.*?</SEARCH>`).ReplaceAllString(aiResponse, "")
+		ui.RenderMarkdown(strings.TrimSpace(aiResponseClean))
+
+		var confirmSearch bool
+		errSurvey := survey.AskOne(&survey.Confirm{
+			Message: fmt.Sprintf("Would you like to search the internet for: '%s'?", searchQuery),
+			Default: true,
+		}, &confirmSearch)
+
+		if errSurvey == nil && confirmSearch {
+			ui.RenderStep("🌐", fmt.Sprintf("Searching the internet for '%s'...", searchQuery))
+			tClient := teleskop.NewClient("placeholder") // TODO: Get API key from config when ready
+			searchResult, errSearch := tClient.SearchInternet(ctx, searchQuery)
+			if errSearch == nil {
+				ui.RenderStep("🧠", "Reading internet search results...")
+				
+				// Append internet result to context
+				internetCtx := fmt.Sprintf("\n\nINTERNET SEARCH RESULTS For '%s':\n%s\n\nPlease answer the user based on these results.", searchQuery, searchResult)
+				systemPrompt += internetCtx
+
+				// Rerun AI with updated context
+				aiResponse, usage, err = o.AI.GenerateResponse(ctx, systemPrompt, safeUserInput)
+				if err != nil {
+					return "", fmt.Errorf("AI error after search: %v", err)
+				}
+
+				if privacy.ActiveVault != nil && privacy.PrivacyMode {
+					aiResponse = privacy.ActiveVault.Detokenize(aiResponse)
+				}
+			} else {
+				ui.PrintError(fmt.Sprintf("Failed to search internet: %v", errSearch))
+			}
+		} else {
+			ui.PrintInfo("Internet search skipped.")
+		}
 	}
 
 	sqlQuery := extractSQL(aiResponse)
@@ -578,6 +654,15 @@ func extractSQL(text string) string {
 
 func extractJSON(text string) string {
 	re := regexp.MustCompile("(?s)```json\n?(.*?)\n?```")
+	match := re.FindStringSubmatch(text)
+	if len(match) > 1 {
+		return strings.TrimSpace(match[1])
+	}
+	return ""
+}
+
+func extractSearchQuery(text string) string {
+	re := regexp.MustCompile(`(?is)<SEARCH>(.*?)</SEARCH>`)
 	match := re.FindStringSubmatch(text)
 	if len(match) > 1 {
 		return strings.TrimSpace(match[1])

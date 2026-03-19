@@ -129,6 +129,24 @@ func LogToSession(sessionID string, message string) error {
 	return nil
 }
 
+// LogToSessionAudit stores the exact prompts sent to AI for user transparency
+func LogToSessionAudit(sessionID string, message string) error {
+	auditFile := filepath.Join(config.GetConfigDir(), "sessions", sessionID, "audit.log")
+
+	f, err := os.OpenFile(auditFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	if _, err := f.WriteString(fmt.Sprintf("[%s] %s\n---\n", timestamp, message)); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func ListSessions() ([]*Session, error) {
 	sessionsDir := filepath.Join(config.GetConfigDir(), "sessions")
 	entries, err := os.ReadDir(sessionsDir)

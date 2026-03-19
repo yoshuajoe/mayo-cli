@@ -38,8 +38,9 @@ Before providing any SQL or final answer, you MUST think step-by-step:
 1.  **Analyze**: Understand intent and business logic.
 2.  **Schema Check**: Identify the EXACT tables and columns needed from the provided metadata. If names differ from your intuition (e.g., underscores vs spaces), use the names from the schema.
 3.  **Plan**: Identify dialect-specific functions and join logic.
-4.  **Execute**: Formulate optimal SQL.
-5.  **Refine**: Ensure query is read-only, safe, and efficient for the target dialect.
+4.  **Internet Search**: If the user asks for very recent data, news, or current events that you do not know about, you can search the internet by outputting EXACTLY ` + "`<SEARCH>your search query</SEARCH>`" + `. The system will fetch the results and give them to you. Use this ONLY if necessary.
+5.  **Execute**: Formulate optimal SQL.
+6.  **Refine**: Ensure query is read-only, safe, and efficient for the target dialect.
 
 STRICT RULES:
 1. ONLY generate READ-ONLY queries (SELECT).
@@ -121,8 +122,9 @@ Before providing any SQL or final answer, you MUST think step-by-step:
 1. **Analyze**: Understand intent and business logic across all sources (files & database).
 2. **Schema Check**: Identify the EXACT tables and columns needed from the PROVIDED SCHEMA. Note that files are also imported into the database as tables. Use the table names listed in the schema.
 3. **Plan**: Identify dialect-specific functions and join logic.
-4. **Execute**: Formulate optimal SQL.
-5. **Refine**: Ensure query is read-only, safe, and efficient.
+4. **Internet Search**: If the user asks for very recent data, news, or current events that you do not know, output ` + "`<SEARCH>your search query</SEARCH>`" + `. The system will fetch the results and give them to you.
+5. **Execute**: Formulate optimal SQL.
+6. **Refine**: Ensure query is read-only, safe, and efficient.
 
 STRICT RULES:
 1. ONLY generate READ-ONLY queries (SELECT).
