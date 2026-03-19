@@ -233,3 +233,9 @@ func (v *Vault) Reset() {
 	v.reverse = make(map[string]string)
 	v.counters = make(map[EntityType]int)
 }
+
+// Apply implements the knowledge.PrivacyFilter interface by tokenizing PII in text.
+// This ensures PII is masked before being sent to external APIs or stored in the vector DB.
+func (v *Vault) Apply(text string) string {
+	return v.Tokenize(text)
+}

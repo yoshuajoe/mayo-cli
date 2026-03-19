@@ -15,6 +15,7 @@ const (
 	EntityIPAddress  EntityType = "IP"
 	EntityURL        EntityType = "URL"
 	EntitySSN        EntityType = "SSN"
+	EntityOrg        EntityType = "ORG"
 )
 
 // DetectedEntity represents a single detected PII entity
@@ -51,6 +52,9 @@ func NewDetector() *Detector {
 
 			// SSN: US Social Security Number
 			EntitySSN: regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`),
+
+			// Organizations: PT, CV, Inc., LLC, Corp., GmbH
+			EntityOrg: regexp.MustCompile(`(?i)\b(PT|CV|Inc|LLC|Corp|GmbH|Ltd|Co)\.?\s+[A-Z][A-Za-z0-9&.\-]{2,}(?:\s+[A-Za-z0-9&.\-]{1,})*\b|\b[A-Z][A-Za-z0-9&.\-]{2,}(?:\s+[A-Za-z0-9&.\-]{1,})*\s+(PT|CV|Inc|LLC|Corp|GmbH|Ltd|Co)\.?\b`),
 		},
 	}
 }

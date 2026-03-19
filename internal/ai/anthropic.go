@@ -109,6 +109,10 @@ func (c *AnthropicClient) GenerateResponse(ctx context.Context, systemPrompt, us
 	return "", usage, fmt.Errorf("no response from anthropic")
 }
 
+func (c *AnthropicClient) GetEmbedding(ctx context.Context, text string) ([]float32, error) {
+	return nil, fmt.Errorf("embeddings are not yet supported for Anthropic")
+}
+
 func (c *AnthropicClient) SetModel(modelName string) {
 	c.Model = modelName
 }

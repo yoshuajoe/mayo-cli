@@ -10,6 +10,7 @@ type TokenUsage struct {
 
 type AIClient interface {
 	GenerateResponse(ctx context.Context, systemPrompt, userPrompt string) (string, *TokenUsage, error)
+	GetEmbedding(ctx context.Context, text string) ([]float32, error)
 	SetModel(modelName string)
 	GetModel() string
 	GetProvider() string

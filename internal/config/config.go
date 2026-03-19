@@ -81,6 +81,8 @@ type Config struct {
 	Interactive     bool        `json:"interactive"`   // Point 2.B
 	TeleskopAPIKey  string      `json:"teleskop_api_key,omitempty"`
 	AnalystEnabled  bool        `json:"analyst_enabled"`
+	ServePort       int         `json:"serve_port,omitempty"`
+	ServeToken      string      `json:"serve_token,omitempty"`
 }
 
 func GetConfigDir() string {

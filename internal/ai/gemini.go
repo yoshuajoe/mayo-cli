@@ -63,6 +63,26 @@ func (g *GeminiClient) GenerateResponse(ctx context.Context, systemPrompt string
 	return "", usage, fmt.Errorf("unexpected response format")
 }
 
+func (g *GeminiClient) GetEmbedding(ctx context.Context, text string) ([]float32, error) {
+	modelName := "text-embedding-004"
+	// Use model from config if it looks like an embedding model
+	if g.modelName != "" && (g.modelName == "text-embedding-004" || g.modelName == "embedding-001") {
+		modelName = g.modelName
+	}
+
+	em := g.client.EmbeddingModel(modelName)
+	resp, err := em.EmbedContent(ctx, genai.Text(text))
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.Embedding == nil {
+		return nil, fmt.Errorf("no embedding returned from Gemini")
+	}
+
+	return resp.Embedding.Values, nil
+}
+
 func (g *GeminiClient) Close() {
 	g.client.Close()
 }
