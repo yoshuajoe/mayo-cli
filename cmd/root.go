@@ -9,10 +9,12 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"mayo-cli/internal/ai"
+	"mayo-cli/internal/api"
 	"mayo-cli/internal/changelog"
 	"mayo-cli/internal/config"
 	"mayo-cli/internal/dataframe"
@@ -26,6 +28,7 @@ import (
 	"mayo-cli/internal/teleskop"
 	"mayo-cli/internal/ui"
 	"mayo-cli/pkg/version"
+	"os/exec"
 
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/chzyer/readline"
@@ -236,6 +239,12 @@ func StartInteractiveShell() {
 			readline.PcItem("export"),
 			readline.PcItem("delete"),
 		),
+		readline.PcItem("/serve",
+			readline.PcItem("spawn"),
+			readline.PcItem("status"),
+			readline.PcItem("logs"),
+			readline.PcItem("stop"),
+		),
 		readline.PcItem("/scraper",
 			readline.PcItem("spawn"),
 			readline.PcItem("list"),
@@ -333,7 +342,7 @@ func StartInteractiveShell() {
 		}
 
 		if GlobalOrchestrator == nil {
-			ui.PrintError("Not connected. Use /connect [driver] [dsn] [alias].")
+			ui.PrintError("Not connected. Use /connect to link a database OR /knowledge to index documents.")
 			continue
 		}
 
@@ -752,12 +761,14 @@ func HandleSlashCommand(input string) {
 			// Actually, I'll just fallthrough or repeat logic. Let's just repeat logic for clarity in this one-shot edit.
 		case "list":
 			frames, err := dataframe.List()
-			if err != nil || len(frames) == 0 {
-				ui.PrintInfo("No dataframes saved yet.")
-				return
+			if err != nil {
+				frames = []dataframe.Frame{}
 			}
+
 			ui.PrintInfo("Saved Dataframes:")
+			hasContent := false
 			for _, f := range frames {
+				hasContent = true
 				dirtyMarker := ""
 				if GlobalOrchestrator != nil && GlobalOrchestrator.StagedName == f.Name && GlobalOrchestrator.IsDirty {
 					dirtyMarker = " *"
@@ -769,6 +780,54 @@ func HandleSlashCommand(input string) {
 					f.RowCount,
 					strings.Join(f.Columns, ", "),
 				)
+			}
+
+			// Also list Knowledge Vector Stores
+			vectorDBPath := filepath.Join(config.GetConfigDir(), "data", "vectors.db")
+			if _, err := os.Stat(vectorDBPath); err == nil {
+				if kb, err := db.Connect("sqlite", vectorDBPath); err == nil {
+					defer kb.Close()
+					rows, _ := kb.Query("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'vector_%' AND name NOT LIKE '%_fts%'")
+					if rows != nil {
+						firstK := true
+						for rows.Next() {
+							var tName string
+							if err := rows.Scan(&tName); err == nil {
+								if firstK {
+									fmt.Printf("\n%s\n", ui.StyleMuted.Render("Knowledge Data Assets (Queryable via /df load knowledge:ID):"))
+									firstK = false
+									hasContent = true
+								}
+								id := strings.TrimPrefix(tName, "vector_")
+								// Get row count
+								var count int
+								kb.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", tName)).Scan(&count)
+								// Get source filenames
+								sourceRows, _ := kb.Query(fmt.Sprintf("SELECT DISTINCT source FROM %s", tName))
+								var sources []string
+								if sourceRows != nil {
+									for sourceRows.Next() {
+										var src string
+										if sourceRows.Scan(&src) == nil {
+											sources = append(sources, src)
+										}
+									}
+									sourceRows.Close()
+								}
+								sourceLabel := ""
+								if len(sources) > 0 {
+									sourceLabel = " (" + strings.Join(sources, ", ") + ")"
+								}
+								fmt.Printf("  %s  (%d chunks)%s\n", ui.StyleHighlight.Render("knowledge:"+id), count, sourceLabel)
+							}
+						}
+						rows.Close()
+					}
+				}
+			}
+
+			if !hasContent {
+				ui.PrintInfo("No dataframes or knowledge assets found.")
 			}
 
 		case "load":
@@ -795,7 +854,19 @@ func HandleSlashCommand(input string) {
 			var rows [][]string
 			var err error
 
-			if strings.HasPrefix(name, "scraper:") {
+			if strings.HasPrefix(name, "knowledge:") {
+				// Load from knowledge vector store as a queryable dataset
+				sessionTag := strings.TrimPrefix(name, "knowledge:")
+				knowledgeTableName := "vector_" + strings.ReplaceAll(sessionTag, "-", "_")
+				sqlitePath := filepath.Join(config.GetConfigDir(), "data", "vectors.db")
+				kb, kbErr := db.Connect("sqlite", sqlitePath)
+				if kbErr != nil {
+					ui.PrintError(fmt.Sprintf("Failed to open knowledge store: %v", kbErr))
+					return
+				}
+				defer kb.Close()
+				cols, rows, err = knowledge.LoadAsDataframe(kb, knowledgeTableName)
+			} else if strings.HasPrefix(name, "scraper:") {
 				scraperID := strings.TrimPrefix(name, "scraper:")
 				cols, rows, err = teleskop.GetHead(scraperID, 1000) // Default load 1000 rows
 			} else {
@@ -941,6 +1012,50 @@ func HandleSlashCommand(input string) {
 				GlobalOrchestrator.StagedName = ""
 				GlobalOrchestrator.IsDirty = false
 				ui.PrintSuccess("Working copy reset. AI is now back to Pure Database mode.")
+			}
+
+		case "delete":
+			name := ""
+			if len(parts) >= 3 {
+				name = parts[2]
+			} else {
+				ui.PrintError("Usage: /df delete <name>")
+				return
+			}
+
+			var confirm bool
+			survey.AskOne(&survey.Confirm{Message: fmt.Sprintf("Are you sure you want to delete dataframe/asset '%s'?", name), Default: false}, &confirm)
+			if !confirm {
+				return
+			}
+
+			if strings.HasPrefix(name, "knowledge:") {
+				id := strings.TrimPrefix(name, "knowledge:")
+				knowledgeTableName := "vector_" + strings.ReplaceAll(id, "-", "_")
+				sqlitePath := filepath.Join(config.GetConfigDir(), "data", "vectors.db")
+				kb, err := db.Connect("sqlite", sqlitePath)
+				if err != nil {
+					ui.PrintError(err.Error())
+					return
+				}
+				defer kb.Close()
+				_, err = kb.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", knowledgeTableName))
+				_, _ = kb.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s_fts", knowledgeTableName))
+				if err != nil {
+					ui.PrintError(err.Error())
+					return
+				}
+				ui.PrintSuccess(fmt.Sprintf("Deleted knowledge asset '%s'", name))
+			} else {
+				if err := dataframe.Delete(name); err != nil {
+					ui.PrintError(err.Error())
+					return
+				}
+				ui.PrintSuccess(fmt.Sprintf("Deleted dataframe '%s'", name))
+			}
+			if GlobalOrchestrator != nil && GlobalOrchestrator.StagedName == name {
+				GlobalOrchestrator.StagedName = ""
+				GlobalOrchestrator.IsDirty = false
 			}
 
 		default:
@@ -1429,6 +1544,92 @@ func HandleSlashCommand(input string) {
 			status = "OFF (AI analysis disabled)"
 		}
 		ui.PrintSuccess(fmt.Sprintf("Analyst Insight is now %s", status))
+	case "/serve":
+		mgr := api.NewManager()
+		if len(parts) < 2 {
+			ui.PrintInfo("Usage: /serve [spawn|status|logs|stop]")
+			return
+		}
+
+		switch parts[1] {
+		case "spawn":
+			var port int = 8080
+			cfg, _ := config.LoadConfig()
+			if len(parts) >= 3 {
+				if p, err := strconv.Atoi(parts[2]); err == nil {
+					port = p
+				}
+			}
+
+			token := ""
+			if cfg != nil {
+				token = cfg.ServeToken
+			}
+
+			ui.RenderStep("🚀", fmt.Sprintf("Spawning Mayo Master API on port %d...", port))
+			// Pass empty sessionID to indicate Master Mode
+			pid, err := mgr.Spawn("", port, token)
+			if err != nil {
+				ui.PrintError(err.Error())
+			} else {
+				ui.PrintSuccess(fmt.Sprintf("Master API Server started in background (PID: %d)", pid))
+				
+				// CURL Example
+				sessionID := "SESSION_ID"
+				if GlobalSess != nil {
+					sessionID = GlobalSess.ID
+				}
+				fmt.Printf("\n%s\n", ui.StyleMuted.Render("Example CURL for current session:"))
+				authHeader := ""
+				if token != "" {
+					authHeader = fmt.Sprintf("-H \"Authorization: Bearer %s\" ", token)
+				}
+				fmt.Printf("curl -X POST http://localhost:%d/v1/%s/query %s-H \"Content-Type: application/json\" -d '{\"query\": \"Hello Mayo!\"}'\n\n", port, sessionID, authHeader)
+				ui.PrintInfo("You can query ANY session via http://localhost:" + strconv.Itoa(port) + "/v1/:session_id/query")
+			}
+
+		case "status":
+			servers := mgr.List()
+			if len(servers) == 0 {
+				ui.PrintInfo("No background API servers running.")
+				return
+			}
+
+			fmt.Printf("\n%s\n", ui.StyleHighlight.Render("📡 Active Mayo API Servers:"))
+			for _, s := range servers {
+				status := ui.StyleSuccess.Render("RUNNING")
+				fmt.Printf("  • Port %d | Session: %s | PID: %d | Status: %s\n", s.Port, s.SessionID[:8], s.PID, status)
+			}
+			fmt.Println()
+
+		case "logs":
+			port := 8080
+			if len(parts) >= 3 {
+				port, _ = strconv.Atoi(parts[2])
+			}
+			path := mgr.GetLogPath(port)
+			if _, err := os.Stat(path); err != nil {
+				ui.PrintError(fmt.Sprintf("No logs found for port %d", port))
+				return
+			}
+			ui.PrintInfo(fmt.Sprintf("Showing last 20 lines of logs for port %d:", port))
+			cmd := exec.Command("tail", "-n", "20", path)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			cmd.Run()
+
+		case "stop":
+			if len(parts) < 3 {
+				ui.PrintInfo("Usage: /serve stop [port|session_id]")
+				return
+			}
+			if err := mgr.Stop(parts[2]); err != nil {
+				ui.PrintError(err.Error())
+			} else {
+				ui.PrintSuccess(fmt.Sprintf("Stopped server %s", parts[2]))
+			}
+		}
+
 	case "/clear":
 		ui.ClearScreen()
 		return
@@ -1486,7 +1687,7 @@ func HandleSlashCommand(input string) {
 			"/export", "/share", "/this", "/scan", "/sources", "/df", "/connect",
 			"/reconcile", "/disconnect", "/knowledge", "/context", "/changelog",
 			"/debug", "/setup", "/exit", "/quit", "/model", "/profile",
-			"/sessions", "/session", "/describe", "/privacy", "/clear", "/help",
+			"/sessions", "/session", "/describe", "/privacy", "/clear", "/help", "/serve",
 		}
 
 		bestMatch := ""
@@ -1539,7 +1740,7 @@ func levenshtein(s, t string) int {
 
 func getHelpManual() string {
 	return `
-# 🐶 Mayo Manual - Senior AI Data Partner (v1.3.0)
+# 🐶 Mayo Manual - Senior AI Data Partner (v1.4.0)
 
 Mayo is your autonomous partner for deep data research and analysis. It combines LLM reasoning with direct database and file access. Use it to explore, query, and visualize complex datasets using natural language.
 
@@ -1575,8 +1776,9 @@ Mayo is your autonomous partner for deep data research and analysis. It combines
 Mayo can "stage" query results into memory for further AI analysis or cross-source joins.
 - **/df list**
   List all persisted dataframes saved in the local SQLite storage.
-- **/df load [name]**
-  Load a saved dataframe into the active working memory.
+- **/df load [name|knowledge:session_id]**
+  Load a saved dataframe or an indexed knowledge document into the active working memory.
+  - **Sample**: ` + "`/df load knowledge:abc-123`" + ` to query indexed documents as a dataset.
 - **/df commit [name]**
   Persist the current working memory (result of your last query) into the local SQLite storage for future sessions.
 - **/df status**
@@ -1613,13 +1815,14 @@ Mayo can "stage" query results into memory for further AI analysis or cross-sour
 
 ### 📚 Knowledge Base (RAG)
 - **/knowledge [path]**
-  Parses and indexes external documents (` + "`.pdf, .md, .txt`" + `) into the local vector database for semantic search during analysis.
+  Parses and indexes external documents (` + "`.pdf, .md, .txt`" + `) into the local vector database for semantic search.
+  - **Note**: If Privacy Mode is **ON**, all PII (Emails, Phones, etc.) is masked *per-chunk* before being sent to external AI APIs for embedding generation or stored in the database.
 
 - **/privacy**
-  Toggle PII Masking. When ON, Mayo masks Emails, Phones, and Credentials. Default is **ON**.
+  Toggle PII Masking. When ON, Mayo masks Emails, Phones, and Credentials in both inputs and outputs. Default is **ON**.
 
 - **/debug**
-  Toggle Debug Mode. When ON, raw LLM prompts and responses are displayed in the terminal.
+  Toggle Debug Mode. When ON, raw LLM prompts and responses (including embeddings metadata) are displayed.
 
 ### 💾 Sessions & Research Management
 - **/sessions [create|rename|clear|delete]**
@@ -1635,7 +1838,20 @@ Mayo can "stage" query results into memory for further AI analysis or cross-sour
 - **/share [filename.md]**
   Uses AI to synthesize your entire session into a professional Executive Report. Useful for sending findings to stakeholders.
 
-### 🛸 Inspection & Utilities
+### 🛸 API & Utilities
+### 📡 Mayo API & Serving (v1.4.0)
+You can expose Mayo's brain as a REST API to be used by other applications (Dashboards, Slack bots, etc.).
+
+- **/serve spawn [session_id] [port]** — Starts a background API server for a specific session on a specific port.
+- **/serve status** — Lists all active background API servers and their ports.
+- **/serve logs [port]** — Shows recent activity logs for a specific API server.
+- **/serve stop [port|session_id]** — Stops a running API server.
+
+- **mayo serve [--port 8080] [--token <api-key>] [--session <id>]** (Terminal Command)
+  Starts the API server in the foreground.
+  - **Endpoints**: ` + "`POST /v1/query`" + `, ` + "`GET /v1/status`" + `.
+  - **Auth**: Bearer token is required if configured.
+
 - **/this**
   A "God Mode" view of the current state: session IDs, file paths, active schemas, and PII vault stats.
 - **/clear**
@@ -1718,10 +1934,28 @@ func HandleKnowledge(filePath string) {
 	defer dbConn.Close()
 
 	ui.RenderStep("⚙️", "Indexing knowledge...")
-	if err := knowledge.IndexDocument(dbConn, doc, tableName); err != nil {
+	var pf knowledge.PrivacyFilter
+	if privacy.PrivacyMode && privacy.ActiveVault != nil {
+		pf = privacy.ActiveVault
+	}
+	if err := knowledge.IndexDocument(context.Background(), dbConn, GlobalAI, pf, doc, tableName); err != nil {
 		ui.PrintError(err.Error())
 	} else {
 		ui.PrintSuccess(fmt.Sprintf("Knowledge Indexed into table: %s", tableName))
+
+		// Ensure Orchestrator is ready for Pure RAG mode even if no DB is connected
+		if GlobalOrchestrator == nil && GlobalAI != nil {
+			GlobalOrchestrator = &ai.Orchestrator{
+				AI:             GlobalAI,
+				Connections:    make(map[string]*ai.DBConnection),
+				Session:        GlobalSess,
+				DefaultLimit:   cfg.DefaultLimit,
+				Interactive:    cfg.Interactive,
+				AnalystEnabled: cfg.AnalystEnabled,
+				Files:          []*files.FileData{},
+			}
+			ui.PrintInfo("Mayo is now in Pure Knowledge (RAG) Mode. You can start asking questions!")
+		}
 	}
 }
 

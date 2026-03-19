@@ -149,6 +149,19 @@ func (o *Orchestrator) ProcessQuery(ctx context.Context, userInput string) (stri
 	} else if len(o.Files) > 0 {
 		ui.RenderStep("📦", fmt.Sprintf("Bundling %d files for text-based analysis...", len(o.Files)))
 		systemPrompt = BuildFilesPrompt(o.Files, history, o.UserContext, nil, "sqlite")
+	} else {
+		// Pure Knowledge (RAG) Mode — no DB connections, no files.
+		// We still need a base system prompt for the AI to respond intelligently.
+		systemPrompt = `You are Mayo, an autonomous AI research partner.
+You do NOT have access to any database. Instead, you answer questions based on knowledge documents that have been indexed and provided to you as context below.
+Use the RELEVANT KNOWLEDGE CONTEXT to provide accurate, specific answers. Always cite the source document when referencing specific facts.
+If the knowledge context does not contain enough information, say so clearly.`
+		if history != "" {
+			systemPrompt += "\n\nPREVIOUS CONVERSATION:\n" + history
+		}
+		if o.UserContext != "" {
+			systemPrompt += "\n\nUSER CONTEXT: " + o.UserContext
+		}
 	}
 
 	// --- 3.C KNOWLEDGE INTEGRATION (RAG) ---
@@ -159,7 +172,7 @@ func (o *Orchestrator) ProcessQuery(ctx context.Context, userInput string) (stri
 			if kb, err := sql.Open("sqlite3", sqlitePath); err == nil {
 				defer kb.Close()
 				// Use user input as search query
-				results, _ := knowledge.SearchKnowledge(kb, knowledgeTableName, userInput, 5)
+				results, _ := knowledge.SearchKnowledge(ctx, kb, o.AI, knowledgeTableName, userInput, 5)
 				if len(results) > 0 {
 					ui.RenderStep("📚", fmt.Sprintf("Retrieved %d relevant knowledge snippets...", len(results)))
 					kbCtx := "\n\nRELEVANT KNOWLEDGE CONTEXT (from indexed documents):\n"
