@@ -398,9 +398,13 @@ func InitAIClient(cfg *config.Config) {
 		return
 	}
 
-	apiKey := active.GetAPIKey(cfg.UseKeyring)
-	if apiKey == "" {
-		ui.PrintError("AI Profile incomplete (API Key missing). Please run /setup.")
+	apiKey, err := active.GetAPIKey(cfg.UseKeyring)
+	if err != nil || apiKey == "" {
+		msg := "AI Profile incomplete (API Key missing). Please run /setup."
+		if err != nil {
+			msg = fmt.Sprintf("Keyring error: %v. Please run /setup to re-configure.", err)
+		}
+		ui.PrintError(msg)
 		return
 	}
 

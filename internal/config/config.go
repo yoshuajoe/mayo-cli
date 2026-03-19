@@ -29,15 +29,15 @@ type DSProfile struct {
 	DSN    string `json:"dsn"`
 }
 
-func (p *AIProfile) GetAPIKey(useKeyring bool) string {
+func (p *AIProfile) GetAPIKey(useKeyring bool) (string, error) {
 	if !useKeyring || p.APIKey != "[KEYRING]" {
-		return p.APIKey
+		return p.APIKey, nil
 	}
 	val, err := keyring.Get(KeyringService, p.Name)
 	if err != nil {
-		return ""
+		return "", err
 	}
-	return val
+	return val, nil
 }
 
 func (p *AIProfile) SetAPIKey(key string, useKeyring bool) error {

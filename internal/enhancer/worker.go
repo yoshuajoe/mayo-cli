@@ -39,13 +39,15 @@ func NewWorker(id string) (*Worker, error) {
 	var aiClient ai.AIClient
 	for _, p := range appCfg.AIProfiles {
 		if p.Name == appCfg.ActiveAIProfile {
-			aiClient = ai.NewClient(p.Provider, p.GetAPIKey(appCfg.UseKeyring), p.DefaultModel)
+			key, _ := p.GetAPIKey(appCfg.UseKeyring)
+			aiClient = ai.NewClient(p.Provider, key, p.DefaultModel)
 			break
 		}
 	}
 	if aiClient == nil && len(appCfg.AIProfiles) > 0 {
 		p := appCfg.AIProfiles[0]
-		aiClient = ai.NewClient(p.Provider, p.GetAPIKey(appCfg.UseKeyring), p.DefaultModel)
+		key, _ := p.GetAPIKey(appCfg.UseKeyring)
+		aiClient = ai.NewClient(p.Provider, key, p.DefaultModel)
 	}
 
 	if aiClient == nil {
