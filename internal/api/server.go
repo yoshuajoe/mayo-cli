@@ -139,7 +139,10 @@ func (s *Server) getOrchestrator(sessionID string) (*ai.Orchestrator, error) {
 	}
 
 
-	apiKey := activeProf.GetAPIKey(s.Config.UseKeyring)
+	apiKey, err := activeProf.GetAPIKey(s.Config.UseKeyring)
+	if err != nil || apiKey == "" {
+		return nil, fmt.Errorf("AI Profile incomplete (API Key missing or keyring error: %v)", err)
+	}
 	aiClient := ai.NewClient(activeProf.Provider, apiKey, activeProf.DefaultModel)
 	if aiClient == nil {
 		return nil, fmt.Errorf("AI initialization failed for provider: %s", activeProf.Provider)
