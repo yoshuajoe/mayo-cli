@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -133,14 +134,50 @@ func (c *CaddyManager) Start() error {
 	}
 
 	// Capture and Stream output (Live Verbose)
-	var buf bytes.Buffer
-	multi := io.MultiWriter(os.Stdout, &buf)
-	cmd.Stdout = multi
-	cmd.Stderr = multi
+	stdout, _ := cmd.StdoutPipe()
+	cmd.Stderr = cmd.Stdout // Redirect stderr to stdout pipe
+	
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start caddy process: %v", err)
+	}
 
-	err := cmd.Run()
+	var buf bytes.Buffer
+	done := make(chan bool)
+	
+	// Reader goroutine
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			line := scanner.Text()
+			fmt.Println(line)
+			buf.WriteString(line + "\n")
+			
+			// If we see the success signal from Caddy, we can signal the main thread
+			if strings.Contains(line, "Successfully started Caddy") || strings.Contains(line, "serving initial configuration") {
+				// Wait a tiny bit for any final logs
+				time.Sleep(500 * time.Millisecond)
+				close(done)
+				return
+			}
+		}
+		close(done)
+	}()
+
+	// Wait for either the success signal, process exit, or context timeout
+	select {
+	case <-done:
+		// Success or process exited
+		// If it's still running, it's successfully daemonized
+		return nil
+	case <-ctx.Done():
+		if ctx.Err() == context.DeadlineExceeded {
+			return c.handleCaddyError(fmt.Errorf("timeout"), buf.String(), exe, true)
+		}
+	}
+
+	err := cmd.Wait()
 	if err != nil {
-		return c.handleCaddyError(err, buf.String(), exe, ctx.Err() == context.DeadlineExceeded)
+		return c.handleCaddyError(err, buf.String(), exe, false)
 	}
 	return nil
 }
