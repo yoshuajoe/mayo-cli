@@ -2,11 +2,12 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/AlecAivazis/survey/v2"
+	"mayo-cli/internal/api"
 	"mayo-cli/internal/ui"
 )
 
@@ -66,16 +67,30 @@ func handleTelegramPrepare() {
 		Default: port,
 	}, &port)
 
-	caddyfileContent := ""
-	if hasDomain {
-		caddyfileContent = fmt.Sprintf("%s {\n\treverse_proxy localhost:%s\n}\n", domain, port)
-	} else {
-		caddyfileContent = fmt.Sprintf(":80 {\n\treverse_proxy localhost:%s\n}\n", port)
+	portInt, _ := strconv.Atoi(port)
+	caddyMgr := api.NewCaddyManager()
+	
+	// Check if already installed
+	if !caddyMgr.IsInstalled() {
+		var confirm bool
+		survey.AskOne(&survey.Confirm{
+			Message: "Caddy is not installed. Would you like to install it now?",
+			Default: true,
+		}, &confirm)
+		if confirm {
+			if err := caddyMgr.Install(); err != nil {
+				ui.PrintError(err.Error())
+				return
+			}
+		} else {
+			ui.PrintError("Caddy installation required for this command.")
+			return
+		}
 	}
 
-	err := os.WriteFile("Caddyfile", []byte(caddyfileContent), 0644)
+	err := caddyMgr.Setup(domain, portInt)
 	if err != nil {
-		ui.PrintError(fmt.Sprintf("Failed to write Caddyfile: %v", err))
+		ui.PrintError(fmt.Sprintf("Failed to setup Caddy: %v", err))
 		return
 	}
 
@@ -85,40 +100,24 @@ func handleTelegramPrepare() {
 		ui.PrintInfo("Steps to finish your Telegram / HTTPS setup:")
 		ui.RenderStep("1️⃣", fmt.Sprintf("Point your domain '%s' (A Record) to this server's public IP.", domain))
 		ui.RenderStep("2️⃣", "Ensure ports 80 and 443 are open in your firewall (e.g. AWS Security Group, ufw).")
-		ui.RenderStep("3️⃣", "Make sure 'caddy' is installed on your server.")
-		ui.RenderStep("4️⃣", "Run '/telegram exec' to start the proxy and obtain SSL certificates automatically.")
+		ui.RenderStep("3️⃣", "Run '/telegram exec' to start the proxy and obtain SSL certificates automatically.")
 		ui.PrintInfo(fmt.Sprintf("Your endpoint will be: https://%s/v1/[session_id]/query", domain))
 	} else {
 		ui.PrintInfo("Steps to finish setup:")
 		ui.RenderStep("1️⃣", "Ensure port 80 is open in your firewall.")
-		ui.RenderStep("2️⃣", "Make sure 'caddy' is installed.")
-		ui.RenderStep("3️⃣", "Run '/telegram exec' to start.")
+		ui.RenderStep("2️⃣", "Run '/telegram exec' to start.")
 		ui.PrintInfo("Note: Endpoint will be accessed via http://[YOUR_SERVER_IP]. Telegram may not work without HTTPS.")
 	}
 }
 
 func handleTelegramExec() {
-	if _, err := os.Stat("Caddyfile"); os.IsNotExist(err) {
-		ui.PrintError("Caddyfile not found. Run '/telegram prepare' first.")
+	caddyMgr := api.NewCaddyManager()
+	if !caddyMgr.IsInstalled() {
+		ui.PrintError("Caddy is not installed.")
 		return
 	}
 
-	// Check if caddy is in PATH
-	_, err := exec.LookPath("caddy")
-	if err != nil {
-		ui.PrintError("Caddy is not installed or not in PATH.")
-		ui.PrintInfo("Please install Caddy first: https://caddyserver.com/docs/install")
-		return
-	}
-
-	ui.RenderStep("🚀", "Starting Caddy server in the background...")
-	
-	// 'caddy start' runs it in the background as a daemon
-	cmd := exec.Command("caddy", "start", "--config", "Caddyfile", "--adapter", "caddyfile")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	
-	if err := cmd.Run(); err != nil {
+	if err := caddyMgr.Start(); err != nil {
 		ui.PrintError(fmt.Sprintf("Failed to start Caddy: %v", err))
 		return
 	}

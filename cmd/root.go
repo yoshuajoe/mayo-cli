@@ -225,10 +225,15 @@ func StartInteractiveShell() {
 			readline.PcItem("delete"),
 		),
 		readline.PcItem("/serve",
-			readline.PcItem("spawn"),
+			readline.PcItem("spawn",
+				readline.PcItem("--caddy"),
+				readline.PcItem("--docker"),
+			),
 			readline.PcItem("status"),
+			readline.PcItem("list"),
 			readline.PcItem("logs"),
 			readline.PcItem("stop"),
+			readline.PcItem("stop-all"),
 		),
 		readline.PcItem("/scraper",
 			readline.PcItem("spawn"),
@@ -1739,7 +1744,7 @@ func HandleSlashCommand(input string) {
 	case "/serve":
 		mgr := api.NewManager()
 		if len(parts) < 2 {
-			ui.PrintInfo("Usage: /serve [spawn|status|logs|stop]")
+			ui.PrintInfo("Usage: /serve [spawn|list|status|logs|stop|stop-all]")
 			return
 		}
 
@@ -1747,9 +1752,60 @@ func HandleSlashCommand(input string) {
 		case "spawn":
 			var port int = 8080
 			cfg, _ := config.LoadConfig()
-			if len(parts) >= 3 {
-				if p, err := strconv.Atoi(parts[2]); err == nil {
-					port = p
+			isDocker := false
+			isCaddy := false
+			domain := ""
+
+			// Simple flag parsing
+			for i := 2; i < len(parts); i++ {
+				p := parts[i]
+				if p == "--docker" {
+					isDocker = true
+				} else if p == "--caddy" {
+					isCaddy = true
+				} else if p == "--domain" && i+1 < len(parts) {
+					domain = parts[i+1]
+					i++
+				}
+			}
+
+			// If no flags are provided, ask for deployment mode interactively
+			if !isDocker && !isCaddy {
+				options := []string{
+					"🚀 Local Mode (Direct port access)",
+					"📡 Reverse Proxy Mode (with Caddy & HTTPS)",
+					"🐳 Docker Mode (Isolated containerized server)",
+				}
+				var selected string
+				err := survey.AskOne(&survey.Select{
+					Message: "Select deployment strategy:",
+					Options: options,
+					Default: options[0],
+				}, &selected)
+
+				if err == nil {
+					if strings.Contains(selected, "Reverse Proxy") {
+						isCaddy = true
+					} else if strings.Contains(selected, "Docker Mode") {
+						isDocker = true
+					}
+				}
+			}
+
+			if isCaddy && domain == "" {
+				var useDomain bool
+				survey.AskOne(&survey.Confirm{
+					Message: "Would you like to bind a custom domain for this endpoint (e.g. api.mayo.id)?",
+					Default: false,
+				}, &useDomain)
+
+				if useDomain {
+					survey.AskOne(&survey.Input{
+						Message: "Enter your domain:",
+					}, &domain)
+					if domain == "" {
+						ui.PrintInfo("No domain entered, falling back to localhost.")
+					}
 				}
 			}
 
@@ -1759,51 +1815,104 @@ func HandleSlashCommand(input string) {
 			}
 
 			ui.RenderStep("🚀", fmt.Sprintf("Preparing Master API on port %d...", port))
-			existing := mgr.GetByPort(port)
-			var pid int
-			var err error
 			
 			sessID := "MASTER"
 			if GlobalSess != nil {
 				sessID = GlobalSess.ID
 			}
 
-			if existing != nil {
-				pid = existing.PID
-				ui.PrintInfo(fmt.Sprintf("Existing Mayo API Server found on port %d (PID: %d)", port, pid))
-				mgr.RegisterSession(sessID, port, pid)
+			if isDocker {
+				ui.RenderStep("🐳", fmt.Sprintf("Spawning Mayo Master API in Docker on port %d...", port))
+				containerID, err := mgr.SpawnDocker(sessID, port, token)
+				if err != nil {
+					ui.PrintError(err.Error())
+					return
+				}
+				ui.PrintSuccess(fmt.Sprintf("Docker container started: %s", containerID))
 			} else {
-				ui.RenderStep("🚀", fmt.Sprintf("Spawning Mayo Master API on port %d...", port))
-				pid, err = mgr.Spawn(sessID, port, token)
+				existing := mgr.GetByPort(port)
+				var pid int
+				var err error
+				if existing != nil {
+					pid = existing.PID
+					ui.PrintInfo(fmt.Sprintf("Existing Mayo API Server found on port %d (PID: %d)", port, pid))
+					mgr.RegisterSession(sessID, port, pid)
+				} else {
+					ui.RenderStep("🚀", fmt.Sprintf("Spawning Mayo Master API on port %d...", port))
+					pid, err = mgr.Spawn(sessID, port, token)
+				}
+				
+				if err != nil {
+					ui.PrintError(err.Error())
+					if strings.Contains(err.Error(), "already in use") {
+						ui.PrintInfo("Try stopping the existing server first: /serve stop " + strconv.Itoa(port))
+					}
+					return
+				} else {
+					if existing == nil {
+						ui.PrintSuccess(fmt.Sprintf("Master API Server started in background (PID: %d)", pid))
+						ui.PrintInfo("Note: The server is now detached and will continue running even if you close this CLI.")
+					} else {
+						ui.PrintSuccess(fmt.Sprintf("Authorized Session [%s] on existing Master API Server.", short(sessID)))
+					}
+				}
+			}
+
+			if isCaddy {
+				caddyMgr := api.NewCaddyManager()
+				if !caddyMgr.IsInstalled() {
+					ui.PrintInfo("Caddy is not installed on your OS.")
+					var confirm bool
+					survey.AskOne(&survey.Confirm{
+						Message: "Would you like to install Caddy now? (requires Homebrew on Mac, or sudo on Linux)",
+						Default: true,
+					}, &confirm)
+
+					if confirm {
+						if err := caddyMgr.Install(); err != nil {
+							ui.PrintError("Failed to install Caddy: " + err.Error())
+							isCaddy = false
+						}
+					} else {
+						ui.PrintInfo("Skipping Caddy setup.")
+						isCaddy = false
+					}
+				}
+
+				if isCaddy {
+					if err := caddyMgr.Setup(domain, port); err != nil {
+						ui.PrintError(err.Error())
+					} else if err := caddyMgr.Start(); err != nil {
+						ui.PrintError(err.Error())
+					} else {
+						ui.PrintSuccess("Caddy proxy is ACTIVE.")
+					}
+				}
 			}
 			
-			if err != nil {
-				ui.PrintError(err.Error())
-				if strings.Contains(err.Error(), "already in use") {
-					ui.PrintInfo("Try stopping the existing server first: /serve stop " + strconv.Itoa(port))
-				}
-			} else {
-				if existing == nil {
-					ui.PrintSuccess(fmt.Sprintf("Master API Server started in background (PID: %d)", pid))
-					ui.PrintInfo("Note: The server is now detached and will continue running even if you close this CLI.")
-				} else {
-					ui.PrintSuccess(fmt.Sprintf("Authorized Session [%s] on existing Master API Server.", short(sessID)))
-				}
-				
-				// CURL Example for current session
-				displaySessID := sessID
-				if GlobalSess != nil {
-					displaySessID = GlobalSess.ID
-				}
-				
-				fmt.Printf("\n%s\n", ui.StyleMuted.Render("CURL Example for session ("+short(displaySessID)+"):"))
-				authHeader := ""
-				if token != "" {
-					authHeader = fmt.Sprintf("-H \"Authorization: Bearer %s\" ", token)
-				}
-				fmt.Printf("curl -X POST http://localhost:%d/v1/%s/query %s-H \"Content-Type: application/json\" -d '{\"query\": \"Hello Mayo!\"}'\n\n", port, displaySessID, authHeader)
-				ui.PrintInfo("Only spawned sessions are accessible via this port.")
+			// CURL Example for current session
+			displaySessID := sessID
+			if GlobalSess != nil {
+				displaySessID = GlobalSess.ID
 			}
+			
+			host := fmt.Sprintf("http://localhost:%d", port)
+			if domain != "" {
+				protocol := "http"
+				// Caddy usually enables HTTPS automatically if domain is provided
+				if !strings.HasPrefix(domain, ":") && !strings.Contains(domain, "localhost") {
+					protocol = "https"
+				}
+				host = fmt.Sprintf("%s://%s", protocol, domain)
+			}
+
+			fmt.Printf("\n%s\n", ui.StyleMuted.Render("CURL Example for session ("+short(displaySessID)+"):"))
+			authHeader := ""
+			if token != "" {
+				authHeader = fmt.Sprintf("-H \"Authorization: Bearer %s\" ", token)
+			}
+			fmt.Printf("curl -X POST %s/v1/%s/query %s-H \"Content-Type: application/json\" -d '{\"query\": \"Hello Mayo!\"}'\n\n", host, displaySessID, authHeader)
+			ui.PrintInfo("Only spawned sessions are accessible via this port.")
 
 
 		case "status", "list":
@@ -1816,7 +1925,11 @@ func HandleSlashCommand(input string) {
 			fmt.Printf("\n%s\n", ui.StyleHighlight.Render("📡 Active Mayo API Servers:"))
 			for _, s := range servers {
 				status := ui.StyleSuccess.Render("RUNNING")
-				fmt.Printf("  • Port %d | Session: %s | PID: %d | Status: %s\n", s.Port, short(s.SessionID), s.PID, status)
+				if s.IsDocker {
+					fmt.Printf("  • [🐳] Port %d | Session: %s | ID: %s | Status: %s\n", s.Port, short(s.SessionID), s.ContainerID, status)
+				} else {
+					fmt.Printf("  • [🏃] Port %d | Session: %s | PID: %d | Status: %s\n", s.Port, short(s.SessionID), s.PID, status)
+				}
 			}
 			fmt.Println()
 
@@ -1837,11 +1950,18 @@ func HandleSlashCommand(input string) {
 			cmd.Run()
 
 		case "stop":
-			if len(parts) < 3 {
+			target := ""
+			if len(parts) >= 3 {
+				target = parts[2]
+			} else if GlobalSess != nil {
+				target = GlobalSess.ID
+			}
+
+			if target == "" {
 				ui.PrintInfo("Usage: /serve stop [session_id|port]")
 				return
 			}
-			target := parts[2]
+
 			if err := mgr.Stop(target); err != nil {
 				ui.PrintError(err.Error())
 			} else {
@@ -1849,11 +1969,21 @@ func HandleSlashCommand(input string) {
 				if _, err := strconv.Atoi(target); err == nil && len(target) < 6 {
 					ui.PrintSuccess(fmt.Sprintf("Stopped Master API Server on port %s", target))
 				} else {
-					ui.PrintSuccess(fmt.Sprintf("Deactivated session [%s] from API Server.", target))
+					// We need to know if the server was killed or just sess delisted
+					if mgr.GetByPort(8080) == nil {
+						ui.PrintSuccess("Stopped Mayo Master API Server (Last session removed).")
+					} else {
+						ui.PrintSuccess(fmt.Sprintf("Deactivated session [%s] from API Server.", short(target)))
+					}
 				}
 			}
+		case "stop-all":
+			if err := mgr.StopAll(); err != nil {
+				ui.PrintError(err.Error())
+			} else {
+				ui.PrintSuccess("All background Mayo sessions and servers have been terminated.")
+			}
 		}
-
 
 	case "/clear":
 		ui.ClearScreen()
@@ -2116,10 +2246,11 @@ When in Dataframe Mode, your prompt will show a 📊 icon.
 ###  Mayo API & Serving (v1.4.0)
 You can expose Mayo's brain as a REST API to be used by other applications (Dashboards, Slack bots, etc.).
 
-- **/serve spawn [port]** — Starts a background Master API server (default 8080).
-- **/serve status**, **/serve list** — Lists all active background API servers.
-- **/serve logs [port]** — Shows recent activity logs for a specific API server.
-- **/serve stop [target]** — Stops a running API server or deactivates a session.
+- **/serve spawn [--docker] [--caddy]** — Starts a background Master API server (8080).
+- **/serve status**, **/serve list** — Lists all active Mayo servers (Local, Docker & Discovered).
+- **/serve logs** — Shows recent activity logs for port 8080.
+- **/serve stop [target]** — Stops a specific session or server port.
+- **/serve stop-all** — Forcefully kills ALL Mayo-related background processes.
 
 - **mayo serve [--port 8080] [--token <api-key>] [--session <id>]** (Terminal Command)
   Starts the API server in the foreground.

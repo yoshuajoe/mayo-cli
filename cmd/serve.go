@@ -3,8 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"strconv"
-
+	
 	"mayo-cli/internal/api"
 	"mayo-cli/internal/config"
 
@@ -31,14 +30,6 @@ Endpoints:
 
 		// 1. Resolve port: flag > config > default
 		port := 8080
-		if cfg != nil && cfg.ServePort > 0 {
-			port = cfg.ServePort
-		}
-		if servePort != "" {
-			if p, err := strconv.Atoi(servePort); err == nil {
-				port = p
-			}
-		}
 
 		// 2. Resolve token: flag > config
 		token := ""
@@ -58,8 +49,12 @@ Endpoints:
 	},
 }
 
+var spawned bool
+
 func init() {
 	serveCmd.Flags().StringVarP(&servePort, "port", "p", "", "Port to listen on (default: 8080)")
 	serveCmd.Flags().StringVarP(&serveToken, "token", "t", "", "Bearer token for API authentication")
+	serveCmd.Flags().BoolVar(&spawned, "spawned", false, "Internal use: indicates a Mayo background process")
+	serveCmd.Flags().MarkHidden("spawned")
 	rootCmd.AddCommand(serveCmd)
 }

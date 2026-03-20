@@ -16,10 +16,12 @@ import (
 )
 
 type RunningServer struct {
-	PID       int       `json:"pid"`
-	SessionID string    `json:"session_id"`
-	Port      int       `json:"port"`
-	StartedAt time.Time `json:"started_at"`
+	PID         int       `json:"pid,omitempty"`
+	ContainerID string    `json:"container_id,omitempty"`
+	SessionID   string    `json:"session_id"`
+	Port        int       `json:"port"`
+	StartedAt   time.Time `json:"started_at"`
+	IsDocker    bool      `json:"is_docker"`
 }
 
 type Manager struct {
@@ -47,7 +49,7 @@ func (m *Manager) Spawn(sessionID string, port int, token string) (int, error) {
 
 	// 2. Prepare command
 	exe, _ := os.Executable()
-	args := []string{"serve", "--port", strconv.Itoa(port)}
+	args := []string{"serve", "--port", strconv.Itoa(port), "--spawned"}
 	if sessionID != "" {
 		args = append(args, "--session", sessionID)
 	}
@@ -92,28 +94,181 @@ func (m *Manager) Spawn(sessionID string, port int, token string) (int, error) {
 		SessionID: displayID,
 		Port:      port,
 		StartedAt: time.Now(),
+		IsDocker:  false,
 	}
 	m.register(s)
 
 	return cmd.Process.Pid, nil
 }
 
+func (m *Manager) SpawnDocker(sessionID string, port int, token string) (string, error) {
+	// 1. Port conflict check
+	if m.IsPortInUse(port) {
+		return "", fmt.Errorf("port %d is already in use. Please stop it first", port)
+	}
+
+	// 2. Prepare Docker command
+	containerName := fmt.Sprintf("mayo-server-%d", port)
+	configDir := config.GetConfigDir()
+	
+	// We use the image 'mayo-cli:latest' which should be built by the user or by Makefile
+	args := []string{
+		"run", "-d",
+		"--name", containerName,
+		"-p", fmt.Sprintf("%d:%d", port, port),
+		"-v", fmt.Sprintf("%s:/root/.mayo", configDir),
+		"mayo-cli:latest",
+		"serve", "--port", strconv.Itoa(port), "--spawned",
+	}
+
+	if token != "" {
+		args = append(args, "--token", token)
+	}
+
+	// Use terminal to run docker
+	cmd := exec.Command("docker", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("docker error: %v (output: %s)", err, string(out))
+	}
+
+	containerID := strings.TrimSpace(string(out))
+	if len(containerID) > 12 {
+		containerID = containerID[:12]
+	}
+
+	displayID := sessionID
+	if displayID == "" {
+		displayID = "MASTER"
+	}
+
+	// 3. Register server
+	s := RunningServer{
+		ContainerID: containerID,
+		SessionID:   displayID,
+		Port:        port,
+		StartedAt:   time.Now(),
+		IsDocker:    true,
+	}
+	m.register(s)
+
+	return containerID, nil
+}
+
 
 func (m *Manager) List() []RunningServer {
 	var active []RunningServer
-	all := m.loadAll()
+	tracked := m.loadAll()
 	
-	// Verify if still running
-	for _, s := range all {
-		if m.isProcessRunning(s.PID) {
+	// 1. Verify tracked ones first
+	for _, s := range tracked {
+		running := false
+		if s.IsDocker {
+			running = m.isContainerRunning(s.ContainerID)
+		} else {
+			running = m.isProcessRunning(s.PID)
+		}
+
+		if running {
 			active = append(active, s)
 		}
 	}
 
-	if len(active) != len(all) {
+	// 2. Discover un-tracked Mayo processes on the system
+	discovered := m.DiscoverProcesses()
+	for _, ds := range discovered {
+		// Only add if not already in the active list (matching by PID)
+		isDuplicate := false
+		for _, as := range active {
+			if as.PID == ds.PID && as.PID != 0 {
+				isDuplicate = true
+				break
+			}
+		}
+		if !isDuplicate {
+			active = append(active, ds)
+		}
+	}
+
+	if len(active) != len(tracked) {
 		m.saveAll(active)
 	}
 	return active
+}
+
+func (m *Manager) DiscoverProcesses() []RunningServer {
+	var found []RunningServer
+	
+	// Using ps to find all processes containing 'mayo' and 'serve'
+	// This works across different versions as long as it has 'mayo' in binary name and 'serve' in args
+	cmd := exec.Command("ps", "-A", "-o", "pid,command")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return found
+	}
+
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.Contains(line, "ps -A") {
+			continue
+		}
+
+		// Look for 'mayo' and 'serve' AND the unique flag '--spawned'
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "mayo") && strings.Contains(lower, "serve") && strings.Contains(lower, "--spawned") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				pid, _ := strconv.Atoi(parts[0])
+				if pid == os.Getpid() {
+					continue // Don't list ourselves if we are running 'serve' (unlikely for CLI but safe)
+				}
+
+				// Try to extract port from command line
+				port := 8080 // Default
+				for i, p := range parts {
+					if p == "--port" && i+1 < len(parts) {
+						if v, err := strconv.Atoi(parts[i+1]); err == nil {
+							port = v
+						}
+					}
+				}
+
+				found = append(found, RunningServer{
+					PID:       pid,
+					Port:      port,
+					SessionID: "UNKNOWN (DISCOVERED)",
+					StartedAt: time.Now(),
+				})
+			}
+		}
+	}
+	
+	return found
+}
+
+func (m *Manager) StopAll() error {
+	servers := m.List()
+	if len(servers) == 0 {
+		return fmt.Errorf("no active Mayo processes found to stop")
+	}
+
+	for _, s := range servers {
+		if s.IsDocker {
+			exec.Command("docker", "stop", s.ContainerID).Run()
+			exec.Command("docker", "rm", s.ContainerID).Run()
+		} else {
+			proc, err := os.FindProcess(s.PID)
+			if err == nil {
+				proc.Signal(syscall.SIGTERM)
+				time.Sleep(100 * time.Millisecond)
+				proc.Kill()
+			}
+		}
+	}
+
+	m.saveAll([]RunningServer{})
+	return nil
 }
 
 func (m *Manager) Stop(idOrSession string) error {
@@ -130,7 +285,7 @@ func (m *Manager) Stop(idOrSession string) error {
 		matches := false
 		if isPort && strconv.Itoa(s.Port) == idOrSession {
 			matches = true
-		} else if s.SessionID == idOrSession || fmt.Sprintf("%d", s.PID) == idOrSession {
+		} else if s.SessionID == idOrSession || fmt.Sprintf("%d", s.PID) == idOrSession || s.ContainerID == idOrSession {
 			matches = true
 		}
 
@@ -142,37 +297,55 @@ func (m *Manager) Stop(idOrSession string) error {
 	}
 
 	if len(targets) == 0 {
-		return fmt.Errorf("server or session not found")
+		return fmt.Errorf("server, session, or container not found")
 	}
 
-	// Determine if we should kill the process
 	for _, t := range targets {
-		shouldKill := false
-		if isPort {
-			// If stopped by port, kill it
-			shouldKill = true
-		} else {
-			// If stopped by session, check if any other sessions are still using this PID
-			lastForPID := true
+		if t.IsDocker {
+			// Check if any other sessions are still using this container
+			lastForContainer := true
 			for _, r := range remaining {
-				if r.PID == t.PID {
-					lastForPID = false
+				if r.ContainerID == t.ContainerID {
+					lastForContainer = false
 					break
 				}
 			}
-			if lastForPID {
-				shouldKill = true
-			}
-		}
 
-		if shouldKill {
-			// Kill process
-			proc, err := os.FindProcess(t.PID)
-			if err == nil {
-				proc.Signal(syscall.SIGTERM)
-				// Wait a bit and force kill if needed
-				time.Sleep(200 * time.Millisecond)
-				proc.Kill()
+			if lastForContainer {
+				// Stop and remove container
+				exec.Command("docker", "stop", t.ContainerID).Run()
+				exec.Command("docker", "rm", t.ContainerID).Run()
+			}
+		} else {
+			// Standard process handling
+			// Determine if we should kill the process
+			shouldKill := false
+			if isPort {
+				// If stopped by port, kill it
+				shouldKill = true
+			} else {
+				// If stopped by session, check if any other sessions are still using this PID
+				lastForPID := true
+				for _, r := range remaining {
+					if r.PID == t.PID {
+						lastForPID = false
+						break
+					}
+				}
+				if lastForPID {
+					shouldKill = true
+				}
+			}
+
+			if shouldKill {
+				// Kill process
+				proc, err := os.FindProcess(t.PID)
+				if err == nil {
+					proc.Signal(syscall.SIGTERM)
+					// Wait a bit and force kill if needed
+					time.Sleep(200 * time.Millisecond)
+					proc.Kill()
+				}
 			}
 		}
 	}
@@ -237,6 +410,18 @@ func (m *Manager) isProcessRunning(pid int) bool {
 	}
 	err = process.Signal(syscall.Signal(0))
 	return err == nil
+}
+
+func (m *Manager) isContainerRunning(containerID string) bool {
+	if containerID == "" {
+		return false
+	}
+	cmd := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", containerID)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == "true"
 }
 
 func (m *Manager) IsPortInUse(port int) bool {

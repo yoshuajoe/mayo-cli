@@ -45,7 +45,7 @@ func (s *Server) Start() error {
 	mux.Handle("/v1/", s.authMiddleware(http.HandlerFunc(s.router)))
 	mux.Handle("/v1/sessions", s.authMiddleware(http.HandlerFunc(s.handleListSessions)))
 
-	addr := fmt.Sprintf(":%d", s.Port)
+	addr := ":8080"
 	ui.PrintSuccess(fmt.Sprintf("Mayo Master API Server listening on http://localhost%s", addr))
 	ui.PrintInfo("Endpoints: /v1/:session_id/query, /v1/sessions")
 	if s.Token != "" {
