@@ -2030,8 +2030,13 @@ When in Dataframe Mode, your prompt will show a 📊 icon.
   Clear the active memory and return Mayo to "Pure Database Mode".
 - **/df export [name]**
   Export a saved dataframe directly to a Markdown/CSV/Excel/JSON file.
-- **/enhance start**
+- **/enhance [start|list|status|stop|logs]**
   AI-powered data enrichment for SQLite. Add new columns based on AI analysis of existing row data. (Requires Dataframe Mode)
+  - **start**: Begin a new enhancement process.
+  - **list**: List all active or completed enhancements.
+  - **status**: Check current progress.
+  - **stop**: Pause an enhancement.
+  - **logs**: View detailed AI processing logs.
 
 - **/describe [alias|df]**
   Generates a high-level statistical summary (Pandas-style) for a data source or the active dataframe.
@@ -2039,6 +2044,17 @@ When in Dataframe Mode, your prompt will show a 📊 icon.
 
 - **/reconcile <alias1> <alias2>** (Alias: **/compare**)
   AI-powered comparison/reconciliation between two data sources. Mayo will look for mapping patterns and identify discrepancies.
+
+### 🌐 Web Scraping & External Sources
+- **/scraper [spawn|list|status|logs|stop|delete|usage|summary|head|tail]**
+  Automated data collection from the web using the Teleskop.id scraper.
+  - **spawn [query]**: Start a new background scraping task.
+  - **list**: Show all active and completed scrapers.
+  - **status**: Check health and progress of a specific scraper.
+  - **logs**: View the real-time activity log.
+  - **stop/delete**: Terminate or remove scraper data.
+  - **usage**: Monitor your Teleskop.id API consumption.
+  - **summary/head/tail**: Inspect the data returned by a scraper.
 
 ### 🧠 AI Intelligence & Configuration
 - **/setup** (Shortcut: **/s**)
@@ -2097,20 +2113,20 @@ When in Dataframe Mode, your prompt will show a 📊 icon.
 - **/history**
   View the chat history of the current or specified session.
 
-### 🛸 API & Utilities
-### 📡 Mayo API & Serving (v1.4.0)
+###  Mayo API & Serving (v1.4.0)
 You can expose Mayo's brain as a REST API to be used by other applications (Dashboards, Slack bots, etc.).
 
 - **/serve spawn [port]** — Starts a background Master API server (default 8080).
 - **/serve status**, **/serve list** — Lists all active background API servers.
 - **/serve logs [port]** — Shows recent activity logs for a specific API server.
-- **/serve stop [port]** — Stops a running API server.
+- **/serve stop [target]** — Stops a running API server or deactivates a session.
 
 - **mayo serve [--port 8080] [--token <api-key>] [--session <id>]** (Terminal Command)
   Starts the API server in the foreground.
-  - **Endpoints**: ` + "`POST /v1/query`" + `, ` + "`GET /v1/status`" + `.
+  - **Endpoints**: ` + "`POST /v1/[session_id]/query`" + `, ` + "`GET /v1/status`" + `.
   - **Auth**: Bearer token is required if configured.
 
+### 🛸 Utilities & Telegram
 - **/mayo**
   Displays Mayo's version, license, and current system health status.
 
