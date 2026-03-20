@@ -1,14 +1,16 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"time"
 	"mayo-cli/internal/config"
 	"mayo-cli/internal/ui"
-	"strings"
 )
 
 type CaddyManager struct {
@@ -111,30 +113,64 @@ func (c *CaddyManager) Start() error {
 	// For simplicity, we'll try 'caddy start' and if it fails because it's already running, we try 'caddy reload'
 	
 	ui.RenderStep("📡", "Starting/Reloading Caddy proxy...")
+	ui.PrintInfo("Note: If you use a custom domain, Caddy may take a minute to verify SSL via Let's Encrypt.")
 	
+	// Use context with timeout to prevent hanging forever (e.g. DNS propagation)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
 	// Check if caddy is already running
 	checkCmd := exec.Command("pgrep", "caddy")
 	if err := checkCmd.Run(); err == nil {
 		// Running, so reload
-		cmd := exec.Command(exe, "reload", "--config", caddyfilePath)
+		cmd := exec.CommandContext(ctx, exe, "reload", "--config", caddyfilePath)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			return fmt.Errorf("failed to reload Caddy: %v\nOutput: %s", err, string(out))
+			return c.handleCaddyError(err, string(out), exe, ctx.Err() == context.DeadlineExceeded)
 		}
 		return nil
 	}
 
 	// Not running, so start
-	cmd := exec.Command(exe, "start", "--config", caddyfilePath)
+	cmd := exec.CommandContext(ctx, exe, "start", "--config", caddyfilePath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		output := string(out)
-		if strings.Contains(output, "permission denied") && runtime.GOOS == "linux" {
-			return fmt.Errorf("caddy failed to bind to port 80/443. On Linux, you must allow the binary to bind to these ports:\n\n   sudo setcap cap_net_bind_service=+ep %s\n\n   ... or run Mayo with sudo.", exe)
-		}
-		return fmt.Errorf("failed to start Caddy: %v\nOutput: %s", err, output)
+		return c.handleCaddyError(err, string(out), exe, ctx.Err() == context.DeadlineExceeded)
 	}
 	return nil
+}
+
+func (c *CaddyManager) handleCaddyError(err error, output string, exe string, isTimeout bool) error {
+	msg := "\n------------------------------------------------------------\n"
+	msg += "❌ Caddy Proxy Error\n"
+	msg += "------------------------------------------------------------\n\n"
+
+	if isTimeout {
+		msg += "Status: TIMEOUT (60s)\n"
+		msg += "Reason: Caddy is taking too long to start. Usually due to SSL/DNS verification.\n"
+	} else {
+		msg += fmt.Sprintf("Status: FAILED (%v)\n", err)
+	}
+
+	if output != "" {
+		msg += fmt.Sprintf("\nCaptured Output:\n%s\n", ui.StyleMuted.Render(output))
+	}
+
+	msg += "\n💡 TROUBLESHOOTING GUIDE:\n"
+	msg += "1. DNS Propagation: Verify your domain points directly to this server IP.\n"
+	msg += "2. Cloudflare Proxy: If using Cloudflare, turn OFF 'Proxy' (Orange Cloud) until Caddy is up.\n"
+	
+	if runtime.GOOS == "linux" && strings.Contains(output, "permission denied") {
+		msg += "3. Linux Port Restrictions: You must allow this binary to bind to port 80/443:\n"
+		msg += fmt.Sprintf("   Run: sudo setcap cap_net_bind_service=+ep %s\n", exe)
+	} else if runtime.GOOS == "linux" {
+		msg += "3. Firewall: Ensure ports 80 and 443 are open (e.g., sudo ufw allow 80,443/tcp).\n"
+	} else {
+		msg += "3. Firewall: Ensure port 80 and 443 are open in your server's security group (AWS, GCP, etc).\n"
+	}
+
+	msg += "\n------------------------------------------------------------\n"
+	return fmt.Errorf(msg)
 }
 
 func (c *CaddyManager) Stop() error {
