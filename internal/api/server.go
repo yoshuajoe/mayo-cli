@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -108,6 +110,11 @@ type QueryRequest struct {
 
 // getOrchestrator loads a session into memory only when needed (Lazy Loading)
 func (s *Server) getOrchestrator(sessionID string) (*ai.Orchestrator, error) {
+	// 0. Security Whitelist: Only allow sessions that have been "spawned" via CLI
+	if !s.isSessionAuthorized(sessionID) {
+		return nil, fmt.Errorf("session [%s] is not authorized for this API port. Run '/serve spawn' in CLI to authorize it", sessionID)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -241,6 +248,25 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request, sessionID 
 		"connected_sources": len(orch.Connections),
 		"ai_model":          model,
 	})
+}
+
+func (s *Server) isSessionAuthorized(sessionID string) bool {
+	dir := filepath.Join(config.GetConfigDir(), "api")
+	path := filepath.Join(dir, "servers.json")
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var servers []RunningServer
+	json.Unmarshal(data, &servers)
+
+	for _, rs := range servers {
+		if rs.Port == s.Port && rs.SessionID == sessionID {
+			return true
+		}
+	}
+	return false
 }
 
 func writeJSON(w http.ResponseWriter, code int, v interface{}) {

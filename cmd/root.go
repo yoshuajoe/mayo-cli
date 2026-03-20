@@ -136,7 +136,7 @@ func StartInteractiveShell() {
 		options := []string{"[+ CREATE NEW SESSION]"}
 		idMap := make(map[string]string)
 		for _, s := range list {
-			label := fmt.Sprintf("[%s] %s", s.ID[:8], s.Summary)
+			label := fmt.Sprintf("[%s] %s", short(s.ID), s.Summary)
 			options = append(options, label)
 			idMap[label] = s.ID
 		}
@@ -1395,7 +1395,7 @@ func HandleSlashCommand(input string) {
 
 		fmt.Printf("%s\n", ui.StyleHighlight.Render("--- SYSTEM STATUS ---"))
 		if GlobalSess != nil {
-			fmt.Printf("Active Session : %s (%s)\n", GlobalSess.ID[:8], GlobalSess.Summary)
+			fmt.Printf("Active Session : %s (%s)\n", short(GlobalSess.ID), GlobalSess.Summary)
 		} else {
 			fmt.Printf("Active Session : None\n")
 		}
@@ -1502,7 +1502,7 @@ func HandleSlashCommand(input string) {
 				if GlobalSess != nil && s.ID == GlobalSess.ID {
 					prefix = "🟢 "
 				}
-				label := fmt.Sprintf("%s[%s] %s", prefix, s.ID[:8], s.Summary)
+				label := fmt.Sprintf("%s[%s] %s", prefix, short(s.ID), s.Summary)
 				options = append(options, label)
 				idMap[label] = s.ID
 			}
@@ -1520,7 +1520,7 @@ func HandleSlashCommand(input string) {
 				if err == nil {
 					GlobalSess = s
 					session.InitVault(s) // Initialize vault with this session's key
-					ui.PrintSuccess(fmt.Sprintf("Switched to session: %s", s.ID[:8]))
+					ui.PrintSuccess(fmt.Sprintf("Switched to session: %s", short(s.ID)))
 					
 					// Reconnect previous sources associated with this session
 					cfg, _ := config.LoadConfig()
@@ -1562,7 +1562,7 @@ func HandleSlashCommand(input string) {
 			options := []string{}
 			idMap := make(map[string]string)
 			for _, s := range list {
-				label := fmt.Sprintf("[%s] %s", s.ID[:8], s.Summary)
+				label := fmt.Sprintf("[%s] %s", short(s.ID), s.Summary)
 				options = append(options, label)
 				idMap[label] = s.ID
 			}
@@ -1575,7 +1575,7 @@ func HandleSlashCommand(input string) {
 				id := idMap[selectedLabel]
 				var confirm bool
 				survey.AskOne(&survey.Confirm{
-					Message: fmt.Sprintf("Are you sure you want to delete session %s?", id[:8]),
+					Message: fmt.Sprintf("Are you sure you want to delete session %s?", short(id)),
 					Default: false,
 				}, &confirm)
 				if confirm {
@@ -1758,34 +1758,55 @@ func HandleSlashCommand(input string) {
 				token = cfg.ServeToken
 			}
 
-			ui.RenderStep("🚀", fmt.Sprintf("Spawning Mayo Master API on port %d...", port))
-			// Pass empty sessionID to indicate Master Mode
-			pid, err := mgr.Spawn("", port, token)
+			ui.RenderStep("🚀", fmt.Sprintf("Preparing Master API on port %d...", port))
+			existing := mgr.GetByPort(port)
+			var pid int
+			var err error
+			
+			sessID := "MASTER"
+			if GlobalSess != nil {
+				sessID = GlobalSess.ID
+			}
+
+			if existing != nil {
+				pid = existing.PID
+				ui.PrintInfo(fmt.Sprintf("Existing Mayo API Server found on port %d (PID: %d)", port, pid))
+				mgr.RegisterSession(sessID, port, pid)
+			} else {
+				ui.RenderStep("🚀", fmt.Sprintf("Spawning Mayo Master API on port %d...", port))
+				pid, err = mgr.Spawn(sessID, port, token)
+			}
+			
 			if err != nil {
 				ui.PrintError(err.Error())
 				if strings.Contains(err.Error(), "already in use") {
-					ui.PrintInfo("Try stopping the existing server first: /serve stop 8080")
+					ui.PrintInfo("Try stopping the existing server first: /serve stop " + strconv.Itoa(port))
 				}
 			} else {
-				ui.PrintSuccess(fmt.Sprintf("Master API Server started in background (PID: %d)", pid))
-				ui.PrintInfo("Note: The server is now detached and will continue running even if you close this CLI.")
-				
-				// CURL Example
-				sessionID := "SESSION_ID"
-				if GlobalSess != nil {
-					sessionID = GlobalSess.ID
+				if existing == nil {
+					ui.PrintSuccess(fmt.Sprintf("Master API Server started in background (PID: %d)", pid))
+					ui.PrintInfo("Note: The server is now detached and will continue running even if you close this CLI.")
+				} else {
+					ui.PrintSuccess(fmt.Sprintf("Authorized Session [%s] on existing Master API Server.", short(sessID)))
 				}
-				fmt.Printf("\n%s\n", ui.StyleMuted.Render("Example CURL for current session:"))
+				
+				// CURL Example for current session
+				displaySessID := sessID
+				if GlobalSess != nil {
+					displaySessID = GlobalSess.ID
+				}
+				
+				fmt.Printf("\n%s\n", ui.StyleMuted.Render("CURL Example for session ("+short(displaySessID)+"):"))
 				authHeader := ""
 				if token != "" {
 					authHeader = fmt.Sprintf("-H \"Authorization: Bearer %s\" ", token)
 				}
-				fmt.Printf("curl -X POST http://localhost:%d/v1/%s/query %s-H \"Content-Type: application/json\" -d '{\"query\": \"Hello Mayo!\"}'\n\n", port, sessionID, authHeader)
-				ui.PrintInfo("You can query ANY session via http://localhost:" + strconv.Itoa(port) + "/v1/:session_id/query")
+				fmt.Printf("curl -X POST http://localhost:%d/v1/%s/query %s-H \"Content-Type: application/json\" -d '{\"query\": \"Hello Mayo!\"}'\n\n", port, displaySessID, authHeader)
+				ui.PrintInfo("Only spawned sessions are accessible via this port.")
 			}
 
 
-		case "status":
+		case "status", "list":
 			servers := mgr.List()
 			if len(servers) == 0 {
 				ui.PrintInfo("No background API servers running.")
@@ -1795,7 +1816,7 @@ func HandleSlashCommand(input string) {
 			fmt.Printf("\n%s\n", ui.StyleHighlight.Render("📡 Active Mayo API Servers:"))
 			for _, s := range servers {
 				status := ui.StyleSuccess.Render("RUNNING")
-				fmt.Printf("  • Port %d | Session: %s | PID: %d | Status: %s\n", s.Port, s.SessionID[:8], s.PID, status)
+				fmt.Printf("  • Port %d | Session: %s | PID: %d | Status: %s\n", s.Port, short(s.SessionID), s.PID, status)
 			}
 			fmt.Println()
 
@@ -1911,6 +1932,13 @@ func HandleSlashCommand(input string) {
 			ui.PrintError(fmt.Sprintf("Unknown command: '%s'. Type /help for usage.", cmd))
 		}
 	}
+}
+
+func short(s string) string {
+	if len(s) > 8 {
+		return s[:8]
+	}
+	return s
 }
 
 // Simple Levenshtein distance for command suggestions
@@ -2067,10 +2095,10 @@ When in Dataframe Mode, your prompt will show a 📊 icon.
 ### 📡 Mayo API & Serving (v1.4.0)
 You can expose Mayo's brain as a REST API to be used by other applications (Dashboards, Slack bots, etc.).
 
-- **/serve spawn [session_id] [port]** — Starts a background API server for a specific session on a specific port.
-- **/serve status** — Lists all active background API servers and their ports.
+- **/serve spawn [port]** — Starts a background Master API server (default 8080).
+- **/serve status**, **/serve list** — Lists all active background API servers.
 - **/serve logs [port]** — Shows recent activity logs for a specific API server.
-- **/serve stop [port|session_id]** — Stops a running API server.
+- **/serve stop [port]** — Stops a running API server.
 
 - **mayo serve [--port 8080] [--token <api-key>] [--session <id>]** (Terminal Command)
   Starts the API server in the foreground.

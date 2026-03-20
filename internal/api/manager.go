@@ -138,6 +138,35 @@ func (m *Manager) Stop(idOrSession string) error {
 	return nil
 }
 
+func (m *Manager) RegisterSession(sessionID string, port int, pid int) {
+	all := m.loadAll()
+	// Prevent duplicate entries for the same session on same port
+	for _, s := range all {
+		if s.Port == port && s.SessionID == sessionID {
+			return 
+		}
+	}
+
+	s := RunningServer{
+		PID:       pid,
+		SessionID: sessionID,
+		Port:      port,
+		StartedAt: time.Now(),
+	}
+	all = append(all, s)
+	m.saveAll(all)
+}
+
+func (m *Manager) GetByPort(port int) *RunningServer {
+	all := m.List()
+	for _, s := range all {
+		if s.Port == port {
+			return &s
+		}
+	}
+	return nil
+}
+
 func (m *Manager) GetLogPath(port int) string {
 	return filepath.Join(m.RootDir, "logs", fmt.Sprintf("server_%d.log", port))
 }
