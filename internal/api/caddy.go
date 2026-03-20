@@ -1,8 +1,10 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -121,21 +123,24 @@ func (c *CaddyManager) Start() error {
 
 	// Check if caddy is already running
 	checkCmd := exec.Command("pgrep", "caddy")
+	var cmd *exec.Cmd
 	if err := checkCmd.Run(); err == nil {
 		// Running, so reload
-		cmd := exec.CommandContext(ctx, exe, "reload", "--config", caddyfilePath)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return c.handleCaddyError(err, string(out), exe, ctx.Err() == context.DeadlineExceeded)
-		}
-		return nil
+		cmd = exec.CommandContext(ctx, exe, "reload", "--config", caddyfilePath)
+	} else {
+		// Not running, so start
+		cmd = exec.CommandContext(ctx, exe, "start", "--config", caddyfilePath)
 	}
 
-	// Not running, so start
-	cmd := exec.CommandContext(ctx, exe, "start", "--config", caddyfilePath)
-	out, err := cmd.CombinedOutput()
+	// Capture and Stream output (Live Verbose)
+	var buf bytes.Buffer
+	multi := io.MultiWriter(os.Stdout, &buf)
+	cmd.Stdout = multi
+	cmd.Stderr = multi
+
+	err := cmd.Run()
 	if err != nil {
-		return c.handleCaddyError(err, string(out), exe, ctx.Err() == context.DeadlineExceeded)
+		return c.handleCaddyError(err, buf.String(), exe, ctx.Err() == context.DeadlineExceeded)
 	}
 	return nil
 }
