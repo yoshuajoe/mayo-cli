@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"mayo-cli/internal/config"
 	"mayo-cli/internal/ui"
+	"strings"
 )
 
 type CaddyManager struct {
