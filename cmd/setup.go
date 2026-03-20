@@ -18,10 +18,17 @@ func RunSetup() {
 	}
 
 	// 1. Keyring Setup
-	survey.AskOne(&survey.Confirm{
-		Message: "Store credentials in system keyring?",
-		Default: cfg.UseKeyring,
-	}, &cfg.UseKeyring)
+	if err := config.CheckKeyringHealth(); err != nil {
+		ui.PrintError(fmt.Sprintf("System keyring check failed: %v", err))
+		ui.PrintInfo("Your system may not support system keyring (common in headless/remote environments).")
+		ui.PrintInfo("We will default to storing credentials in plain-text config.json for now.")
+		cfg.UseKeyring = false
+	} else {
+		survey.AskOne(&survey.Confirm{
+			Message: "Store credentials in system keyring?",
+			Default: cfg.UseKeyring,
+		}, &cfg.UseKeyring)
+	}
 
 	// 2. Default Limit Setup
 	var useLimit bool = cfg.DefaultLimit > 0
@@ -65,7 +72,8 @@ func RunSetup() {
 	}, &cfg.AnalystEnabled)
 
 	// 5. Teleskop.id Setup
-	var setupTeleskop bool = cfg.GetTeleskopAPIKey() != ""
+	tk, _ := cfg.GetTeleskopAPIKey()
+	var setupTeleskop bool = tk != ""
 	survey.AskOne(&survey.Confirm{
 		Message: "Configure Teleskop.id Scraper?",
 		Default: setupTeleskop,

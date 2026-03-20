@@ -24,9 +24,13 @@ var spawnCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, _ := config.LoadConfig()
-		apiKey := cfg.GetTeleskopAPIKey()
-		if apiKey == "" {
-			ui.PrintError("Teleskop.id API Key not configured. Run /setup first.")
+		apiKey, err := cfg.GetTeleskopAPIKey()
+		if err != nil || apiKey == "" {
+			if err != nil {
+				ui.PrintError(fmt.Sprintf("Keyring error: %v", err))
+			} else {
+				ui.PrintError("Teleskop.id API Key not configured. Run /setup first.")
+			}
 			return
 		}
 
@@ -77,7 +81,7 @@ var listScrapersCmd = &cobra.Command{
 		var rows [][]string
 
 		cfg, _ := config.LoadConfig()
-		apiKey := cfg.GetTeleskopAPIKey()
+		apiKey, _ := cfg.GetTeleskopAPIKey()
 		client := teleskop.NewClient(apiKey)
 
 		for id, s := range manager.Scrapers {
@@ -103,7 +107,7 @@ var logsCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		id := args[0]
 		cfg, _ := config.LoadConfig()
-		apiKey := cfg.GetTeleskopAPIKey()
+		apiKey, _ := cfg.GetTeleskopAPIKey()
 		client := teleskop.NewClient(apiKey)
 
 		logs, err := client.GetLogs(context.Background(), id)
@@ -126,7 +130,7 @@ var statusCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		id := args[0]
 		cfg, _ := config.LoadConfig()
-		apiKey := cfg.GetTeleskopAPIKey()
+		apiKey, _ := cfg.GetTeleskopAPIKey()
 		client := teleskop.NewClient(apiKey)
 
 		status, err := client.GetScraperStatus(context.Background(), id)
@@ -148,7 +152,7 @@ var stopCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		id := args[0]
 		cfg, _ := config.LoadConfig()
-		apiKey := cfg.GetTeleskopAPIKey()
+		apiKey, _ := cfg.GetTeleskopAPIKey()
 		client := teleskop.NewClient(apiKey)
 
 		err := client.StopScraper(context.Background(), id)
@@ -174,7 +178,7 @@ var deleteCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		id := args[0]
 		cfg, _ := config.LoadConfig()
-		apiKey := cfg.GetTeleskopAPIKey()
+		apiKey, _ := cfg.GetTeleskopAPIKey()
 		client := teleskop.NewClient(apiKey)
 
 		err := client.DeleteScraper(context.Background(), id)
@@ -200,7 +204,7 @@ var usageCmd = &cobra.Command{
 	Short: "Check Teleskop.id API usage",
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, _ := config.LoadConfig()
-		apiKey := cfg.GetTeleskopAPIKey()
+		apiKey, _ := cfg.GetTeleskopAPIKey()
 		client := teleskop.NewClient(apiKey)
 
 		usage, err := client.GetUsage(context.Background())

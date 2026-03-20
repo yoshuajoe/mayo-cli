@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/viper"
 	"github.com/zalando/go-keyring"
 	"gopkg.in/yaml.v3"
+	"fmt"
 )
 
 const (
@@ -49,15 +50,15 @@ func (p *AIProfile) SetAPIKey(key string, useKeyring bool) error {
 	return keyring.Set(KeyringService, p.Name, key)
 }
 
-func (c *Config) GetTeleskopAPIKey() string {
+func (c *Config) GetTeleskopAPIKey() (string, error) {
 	if !c.UseKeyring || c.TeleskopAPIKey != "[KEYRING]" {
-		return c.TeleskopAPIKey
+		return c.TeleskopAPIKey, nil
 	}
 	val, err := keyring.Get(KeyringService, "teleskop_id")
 	if err != nil {
-		return ""
+		return "", err
 	}
-	return val
+	return val, nil
 }
 
 func (c *Config) SetTeleskopAPIKey(key string) error {
@@ -100,6 +101,23 @@ func GetModelsPath() string {
 
 func GetReconcileDir() string {
 	return filepath.Join(GetConfigDir(), "reconcile")
+}
+
+func CheckKeyringHealth() error {
+	testKey := "__mayo_health_check__"
+	// Try to set a dummy value
+	err := keyring.Set(KeyringService, testKey, "health_ok")
+	if err != nil {
+		return err
+	}
+	// Try to get it back
+	val, err := keyring.Get(KeyringService, testKey)
+	if err != nil || val != "health_ok" {
+		return fmt.Errorf("keyring verification failed")
+	}
+	// Cleanup
+	keyring.Delete(KeyringService, testKey)
+	return nil
 }
 
 func InitConfig() error {

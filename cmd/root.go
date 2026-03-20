@@ -759,7 +759,8 @@ func HandleSlashCommand(input string) {
 
 		// 1. Teleskop.id Scraper (Always at top if configured)
 		cfg, _ := config.LoadConfig()
-		if cfg.GetTeleskopAPIKey() != "" {
+		tk, _ := cfg.GetTeleskopAPIKey()
+		if tk != "" {
 			fmt.Printf(" - %s: %s\n", ui.StyleHighlight.Render("teleskop"), "Teleskop.id Scraper")
 		}
 
