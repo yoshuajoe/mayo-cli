@@ -22,6 +22,7 @@ type RunningServer struct {
 	Port        int       `json:"port"`
 	StartedAt   time.Time `json:"started_at"`
 	IsDocker    bool      `json:"is_docker"`
+	Version     string    `json:"version,omitempty"`
 }
 
 type Manager struct {
@@ -77,6 +78,8 @@ func (m *Manager) Spawn(sessionID string, port int, token string) (int, error) {
 	if runtime.GOOS == "windows" {
 		// Windows specific backgrounding if needed
 	} else {
+		// Detach from current process group so it survives CLI termination
+		// This works on Unix/Linux/macOS
 		cmd.SysProcAttr = &syscall.SysProcAttr{
 			Setsid: true,
 		}
@@ -95,6 +98,7 @@ func (m *Manager) Spawn(sessionID string, port int, token string) (int, error) {
 		Port:      port,
 		StartedAt: time.Now(),
 		IsDocker:  false,
+		Version:   "1.4.0", // Tracking version
 	}
 	m.register(s)
 
@@ -149,6 +153,7 @@ func (m *Manager) SpawnDocker(sessionID string, port int, token string) (string,
 		Port:        port,
 		StartedAt:   time.Now(),
 		IsDocker:    true,
+		Version:     "1.4.0",
 	}
 	m.register(s)
 
@@ -166,7 +171,7 @@ func (m *Manager) List() []RunningServer {
 		if s.IsDocker {
 			running = m.isContainerRunning(s.ContainerID)
 		} else {
-			running = m.isProcessRunning(s.PID)
+			running = m.isProcessRunning(s.PID, s.Port)
 		}
 
 		if running {
@@ -261,8 +266,8 @@ func (m *Manager) StopAll() error {
 			proc, err := os.FindProcess(s.PID)
 			if err == nil {
 				proc.Signal(syscall.SIGTERM)
-				time.Sleep(100 * time.Millisecond)
-				proc.Kill()
+				time.Sleep(200 * time.Millisecond)
+				proc.Kill() // Use SIGKILL to be absolutely sure
 			}
 		}
 	}
@@ -400,16 +405,40 @@ func (m *Manager) GetLogPath(port int) string {
 	return filepath.Join(m.RootDir, "logs", fmt.Sprintf("server_%d.log", port))
 }
 
-func (m *Manager) isProcessRunning(pid int) bool {
-	if pid <= 0 {
+func (m *Manager) isProcessRunning(pid int, port int) bool {
+	if pid == 0 {
 		return false
 	}
-	process, err := os.FindProcess(pid)
+	proc, err := os.FindProcess(pid)
 	if err != nil {
 		return false
 	}
-	err = process.Signal(syscall.Signal(0))
-	return err == nil
+	// Check if process is alive (Unix only)
+	if err := proc.Signal(syscall.Signal(0)); err != nil {
+		return false
+	}
+
+	// Double check: Is something actually listening on that port?
+	// This prevents 'ghost' processes from blocking new spawns
+	if port > 0 {
+		checkCmd := exec.Command("lsof", "-i", fmt.Sprintf(":%d", port), "-t")
+		out, _ := checkCmd.CombinedOutput()
+		lsofPIDStr := strings.TrimSpace(string(out))
+		if lsofPIDStr == "" {
+			return false // No process listening on this port!
+		}
+		// Some lsof return multiple PIDs, check if ours is one of them
+		found := false
+		for _, p := range strings.Fields(lsofPIDStr) {
+			if p == strconv.Itoa(pid) {
+				found = true
+				break
+			}
+		}
+		return found
+	}
+
+	return true
 }
 
 func (m *Manager) isContainerRunning(containerID string) bool {
