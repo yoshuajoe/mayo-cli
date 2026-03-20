@@ -116,12 +116,24 @@ func (c *CaddyManager) Start() error {
 	if err := checkCmd.Run(); err == nil {
 		// Running, so reload
 		cmd := exec.Command(exe, "reload", "--config", caddyfilePath)
-		return cmd.Run()
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("failed to reload Caddy: %v\nOutput: %s", err, string(out))
+		}
+		return nil
 	}
 
 	// Not running, so start
 	cmd := exec.Command(exe, "start", "--config", caddyfilePath)
-	return cmd.Run()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		output := string(out)
+		if strings.Contains(output, "permission denied") && runtime.GOOS == "linux" {
+			return fmt.Errorf("caddy failed to bind to port 80/443. On Linux, you must allow the binary to bind to these ports:\n\n   sudo setcap cap_net_bind_service=+ep %s\n\n   ... or run Mayo with sudo.", exe)
+		}
+		return fmt.Errorf("failed to start Caddy: %v\nOutput: %s", err, output)
+	}
+	return nil
 }
 
 func (c *CaddyManager) Stop() error {
@@ -130,5 +142,6 @@ func (c *CaddyManager) Stop() error {
 		return nil
 	}
 	cmd := exec.Command(exe, "stop")
-	return cmd.Run()
+	cmd.CombinedOutput() // Usually fine to ignore output of stop
+	return nil
 }
