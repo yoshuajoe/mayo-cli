@@ -1841,10 +1841,16 @@ func HandleSlashCommand(input string) {
 				ui.PrintInfo("Usage: /serve stop [session_id|port]")
 				return
 			}
-			if err := mgr.Stop(parts[2]); err != nil {
+			target := parts[2]
+			if err := mgr.Stop(target); err != nil {
 				ui.PrintError(err.Error())
 			} else {
-				ui.PrintSuccess(fmt.Sprintf("Stopped server %s", parts[2]))
+				// Detect if it was a port or session for better messaging
+				if _, err := strconv.Atoi(target); err == nil && len(target) < 6 {
+					ui.PrintSuccess(fmt.Sprintf("Stopped Master API Server on port %s", target))
+				} else {
+					ui.PrintSuccess(fmt.Sprintf("Deactivated session [%s] from API Server.", target))
+				}
 			}
 		}
 

@@ -34,7 +34,14 @@ func NewManager() *Manager {
 func (m *Manager) Spawn(sessionID string, port int, token string) (int, error) {
 	// 1. Port conflict check
 	if m.IsPortInUse(port) {
-		return 0, fmt.Errorf("port %d is already in use. Please stop the existing server first using '/serve stop'", port)
+		// Check if it's a mayo process we can reuse
+		pid := m.GetPIDByPort(port)
+		if pid > 0 {
+			// It's a mayo process, we don't need to spawn, just register
+			m.RegisterSession(sessionID, port, pid)
+			return pid, nil
+		}
+		return 0, fmt.Errorf("port %d is already in use by another application. Please stop it first", port)
 	}
 
 	// 2. Prepare command
@@ -111,27 +118,62 @@ func (m *Manager) List() []RunningServer {
 func (m *Manager) Stop(idOrSession string) error {
 	all := m.loadAll()
 	var remaining []RunningServer
-	var target *RunningServer
+	var targets []RunningServer
+
+	isPort := false
+	if _, err := strconv.Atoi(idOrSession); err == nil && len(idOrSession) < 6 {
+		isPort = true
+	}
 
 	for _, s := range all {
-		if s.SessionID == idOrSession || fmt.Sprintf("%d", s.PID) == idOrSession || strconv.Itoa(s.Port) == idOrSession {
-			target = &s
+		matches := false
+		if isPort && strconv.Itoa(s.Port) == idOrSession {
+			matches = true
+		} else if s.SessionID == idOrSession || fmt.Sprintf("%d", s.PID) == idOrSession {
+			matches = true
+		}
+
+		if matches {
+			targets = append(targets, s)
 		} else {
 			remaining = append(remaining, s)
 		}
 	}
 
-	if target == nil {
-		return fmt.Errorf("server not found")
+	if len(targets) == 0 {
+		return fmt.Errorf("server or session not found")
 	}
 
-	// Kill process
-	proc, err := os.FindProcess(target.PID)
-	if err == nil {
-		proc.Signal(syscall.SIGTERM)
-		// Wait a bit and force kill if needed
-		time.Sleep(500 * time.Millisecond)
-		proc.Kill()
+	// Determine if we should kill the process
+	for _, t := range targets {
+		shouldKill := false
+		if isPort {
+			// If stopped by port, kill it
+			shouldKill = true
+		} else {
+			// If stopped by session, check if any other sessions are still using this PID
+			lastForPID := true
+			for _, r := range remaining {
+				if r.PID == t.PID {
+					lastForPID = false
+					break
+				}
+			}
+			if lastForPID {
+				shouldKill = true
+			}
+		}
+
+		if shouldKill {
+			// Kill process
+			proc, err := os.FindProcess(t.PID)
+			if err == nil {
+				proc.Signal(syscall.SIGTERM)
+				// Wait a bit and force kill if needed
+				time.Sleep(200 * time.Millisecond)
+				proc.Kill()
+			}
+		}
 	}
 
 	m.saveAll(remaining)
@@ -158,12 +200,25 @@ func (m *Manager) RegisterSession(sessionID string, port int, pid int) {
 }
 
 func (m *Manager) GetByPort(port int) *RunningServer {
+	// 1. Check tracked list
 	all := m.List()
 	for _, s := range all {
 		if s.Port == port {
 			return &s
 		}
 	}
+
+	// 2. Fallback: Check system processes
+	pid := m.GetPIDByPort(port)
+	if pid > 0 {
+		return &RunningServer{
+			PID:       pid,
+			Port:      port,
+			SessionID: "MASTER",
+			StartedAt: time.Now(),
+		}
+	}
+
 	return nil
 }
 
@@ -185,9 +240,35 @@ func (m *Manager) isProcessRunning(pid int) bool {
 
 func (m *Manager) IsPortInUse(port int) bool {
 	addr := fmt.Sprintf(":%d", port)
-	cmd := exec.Command("lsof", "-i", addr)
+	cmd := exec.Command("lsof", "-i", addr, "-sTCP:LISTEN")
 	out, _ := cmd.CombinedOutput()
 	return len(out) > 0
+}
+
+func (m *Manager) GetPIDByPort(port int) int {
+	addr := fmt.Sprintf(":%d", port)
+	// Get PID of process listening on port
+	cmd := exec.Command("lsof", "-t", "-i", addr, "-sTCP:LISTEN")
+	out, _ := cmd.CombinedOutput()
+	if len(out) == 0 {
+		return 0
+	}
+
+	pidStr := strings.TrimSpace(string(out))
+	pid, _ := strconv.Atoi(pidStr)
+	if pid <= 0 {
+		return 0
+	}
+
+	// Verify it's a Mayo process
+	cmd = exec.Command("ps", "-p", pidStr, "-o", "comm=")
+	out, _ = cmd.CombinedOutput()
+	comm := strings.ToLower(strings.TrimSpace(string(out)))
+	if strings.Contains(comm, "mayo") {
+		return pid
+	}
+
+	return 0
 }
 
 
