@@ -31,8 +31,6 @@ import (
 	"mayo-cli/internal/teleskop"
 	"mayo-cli/internal/ui"
 	"mayo-cli/pkg/version"
-	"os/exec"
-
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/chzyer/readline"
 	"github.com/kballard/go-shellquote"

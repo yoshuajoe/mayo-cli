@@ -29,6 +29,7 @@ var (
 	StyleStatus      = lipgloss.NewStyle().Foreground(ColorHighlight).Italic(true)
 	StyleError       = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Bold(true)
 	StyleSuccess     = lipgloss.NewStyle().Foreground(ColorGreen).Bold(true)
+	StyleWarning     = lipgloss.NewStyle().Foreground(ColorHighlight).Bold(true)
 	StyleDocTitle    = lipgloss.NewStyle().Foreground(ColorPrimary).Underline(true)
 	StyleCodeLine    = lipgloss.NewStyle().Foreground(lipgloss.Color("#8BE9FD"))
 	StyleDiffAdded   = lipgloss.NewStyle().Foreground(ColorWhite).Background(lipgloss.Color("#1B391B"))
@@ -147,6 +148,10 @@ func PrintError(msg string) {
 
 func PrintSuccess(msg string) {
 	fmt.Printf("%s %s\n", StyleSuccess.Render("✅ Success:"), msg)
+}
+
+func PrintWarn(msg string) {
+	fmt.Printf("%s %s\n", StyleWarning.Render("⚠️ Warning:"), msg)
 }
 
 func PrintInfo(msg string) {

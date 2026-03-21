@@ -56,7 +56,7 @@ func (m *Manager) Spawn(sessionID string, port int, token string) (int, error) {
 	}
 
 	// 2. Prepare command
-	exe, _ := os.Executable()
+	exe, _ = os.Executable()
 	args := []string{"serve", "--port", strconv.Itoa(port), "--spawned"}
 	if sessionID != "" {
 		args = append(args, "--session", sessionID)
