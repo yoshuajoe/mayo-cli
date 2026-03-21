@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"mayo-cli/internal/config"
+	"mayo-cli/internal/ui"
 )
 
 type RunningServer struct {
@@ -36,6 +37,12 @@ func NewManager() *Manager {
 }
 
 func (m *Manager) Spawn(sessionID string, port int, token string) (int, error) {
+	exe, _ := os.Executable()
+	if strings.Contains(exe, "go-build") || strings.Contains(exe, "/tmp/") {
+		ui.PrintWarn("Background server might die after CLI exit because you are using 'go run'.")
+		ui.PrintInfo("Recommendation: Build the binary first (go build -o mayo) and run it manually.")
+	}
+
 	// 1. Port conflict check
 	if m.IsPortInUse(port) {
 		// Check if it's a mayo process we can reuse
@@ -219,9 +226,10 @@ func (m *Manager) DiscoverProcesses() []RunningServer {
 			continue
 		}
 
-		// Look for 'mayo' and 'serve' AND the unique flag '--spawned'
+		// Look for 'serve' AND the unique flag '--spawned'
+		// We don't strictly require 'mayo' in the name because 'go run' uses a temp name like 'main'
 		lower := strings.ToLower(line)
-		if strings.Contains(lower, "mayo") && strings.Contains(lower, "serve") && strings.Contains(lower, "--spawned") {
+		if strings.Contains(lower, "serve") && strings.Contains(lower, "--spawned") {
 			parts := strings.Fields(line)
 			if len(parts) >= 2 {
 				pid, _ := strconv.Atoi(parts[0])

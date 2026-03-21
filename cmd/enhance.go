@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"mayo-cli/internal/config"
@@ -178,8 +180,13 @@ func HandleEnhanceStart(cmd *cobra.Command, args []string) {
 	manager.Register(cfg, status)
 	manager.Save()
 
-	// Spawn background process
+	// --- BACKGROUND SPAWN ---
 	exe, _ := os.Executable()
+	if strings.Contains(exe, "go-build") || strings.Contains(exe, "/tmp/") {
+		ui.PrintWarn("Background worker might die after CLI exit because you are using 'go run'.")
+		ui.PrintInfo("Recommendation: Build the binary first (go build -o mayo) and run it manually.")
+	}
+
 	workerCmd := exec.Command(exe, "enhance-worker", id)
 
 	// Redirect output to log file
@@ -187,12 +194,20 @@ func HandleEnhanceStart(cmd *cobra.Command, args []string) {
 	workerCmd.Stdout = logFile
 	workerCmd.Stderr = logFile
 
-	// Detach (Platform specific usually, but for simple backgrounding in Go):
+	// Detach from parent process (Unix/macOS)
+	if workerCmd.SysProcAttr == nil {
+		workerCmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	workerCmd.SysProcAttr.Setsid = true
+	workerCmd.Stdin = nil // Ensure no terminal input
+
 	err := workerCmd.Start()
 	if err != nil {
 		ui.PrintError("Failed to start background worker: " + err.Error())
+		logFile.Close()
 		return
 	}
+	logFile.Close() // Parent doesn't need to keep it open
 
 	ui.PrintSuccess(fmt.Sprintf("Enhancer task '%s' started in background.", id))
 	ui.PrintInfo(fmt.Sprintf("Monitoring logs: mayo enhance logs %s", id))

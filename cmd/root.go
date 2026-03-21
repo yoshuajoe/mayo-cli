@@ -11,6 +11,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"os/exec"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"mayo-cli/internal/ai"
@@ -110,6 +113,9 @@ var enhanceWorkerCmd = &cobra.Command{
 	Hidden: true,
 	Args:   cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
+		// Ignore SIGHUP to ensure process continues after CLI parent exits
+		signal.Ignore(syscall.SIGHUP)
+		
 		id := args[0]
 		worker, err := enhancer.NewWorker(id)
 		if err != nil {
@@ -1800,9 +1806,32 @@ func HandleSlashCommand(input string) {
 				}, &useDomain)
 
 				if useDomain {
-					survey.AskOne(&survey.Input{
-						Message: "Enter your domain:",
-					}, &domain)
+					if len(cfg.KnownDomains) > 0 {
+						options := []string{}
+						for _, d := range cfg.KnownDomains {
+							options = append(options, fmt.Sprintf("(current: %s)", d))
+						}
+						options = append(options, "Set up new domain")
+
+						var selection string
+						survey.AskOne(&survey.Select{
+							Message: "Select domain:",
+							Options: options,
+						}, &selection)
+
+						if selection == "Set up new domain" {
+							survey.AskOne(&survey.Input{Message: "Enter your domain:"}, &domain)
+						} else {
+							// Extract domain from "(current: domain)"
+							domain = strings.TrimPrefix(selection, "(current: ")
+							domain = strings.TrimSuffix(domain, ")")
+						}
+					} else {
+						survey.AskOne(&survey.Input{
+							Message: "Enter your domain:",
+						}, &domain)
+					}
+
 					if domain == "" {
 						ui.PrintInfo("No domain entered, falling back to localhost.")
 					}
@@ -1886,6 +1915,20 @@ func HandleSlashCommand(input string) {
 						ui.PrintError(err.Error())
 					} else {
 						ui.PrintSuccess("Caddy proxy is ACTIVE.")
+						// Save domain to known domains
+						if domain != "" && cfg != nil {
+							found := false
+							for _, kd := range cfg.KnownDomains {
+								if kd == domain {
+									found = true
+									break
+								}
+							}
+							if !found {
+								cfg.KnownDomains = append(cfg.KnownDomains, domain)
+								config.SaveConfig(cfg)
+							}
+						}
 					}
 				}
 			}

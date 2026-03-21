@@ -8,6 +8,7 @@ import (
 
 	"github.com/AlecAivazis/survey/v2"
 	"mayo-cli/internal/api"
+	"mayo-cli/internal/config"
 	"mayo-cli/internal/ui"
 )
 
@@ -40,9 +41,31 @@ func handleTelegramPrepare() {
 	var port string = "8080" // Default internal port for Mayo Master API
 
 	if hasDomain {
-		survey.AskOne(&survey.Input{
-			Message: "Enter your domain (e.g., bot.example.com):",
-		}, &domain)
+		cfg, _ := config.LoadConfig()
+		if cfg != nil && len(cfg.KnownDomains) > 0 {
+			options := []string{}
+			for _, d := range cfg.KnownDomains {
+				options = append(options, fmt.Sprintf("(current: %s)", d))
+			}
+			options = append(options, "Set up new domain")
+
+			var selection string
+			survey.AskOne(&survey.Select{
+				Message: "Select domain for Telegram:",
+				Options: options,
+			}, &selection)
+
+			if selection == "Set up new domain" {
+				survey.AskOne(&survey.Input{Message: "Enter your domain (e.g., bot.example.com):"}, &domain)
+			} else {
+				domain = strings.TrimPrefix(selection, "(current: ")
+				domain = strings.TrimSuffix(domain, ")")
+			}
+		} else {
+			survey.AskOne(&survey.Input{
+				Message: "Enter your domain (e.g., bot.example.com):",
+			}, &domain)
+		}
 
 		if domain == "" {
 			ui.PrintError("Domain is required for automatic HTTPS.")
@@ -92,6 +115,22 @@ func handleTelegramPrepare() {
 	if err != nil {
 		ui.PrintError(fmt.Sprintf("Failed to setup Caddy: %v", err))
 		return
+	}
+
+	// Save domain to known domains if successful
+	cfg, _ := config.LoadConfig()
+	if domain != "" && !strings.HasPrefix(domain, ":") && cfg != nil {
+		found := false
+		for _, kd := range cfg.KnownDomains {
+			if kd == domain {
+				found = true
+				break
+			}
+		}
+		if !found {
+			cfg.KnownDomains = append(cfg.KnownDomains, domain)
+			config.SaveConfig(cfg)
+		}
 	}
 
 	ui.PrintSuccess("Caddyfile generated successfully!")

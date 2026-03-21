@@ -108,14 +108,38 @@ func RunSetup() {
 
 	// 7. AI Profile Setup
 	var profileName string
-	defaultProfile := "default"
-	if cfg.ActiveAIProfile != "" {
-		defaultProfile = cfg.ActiveAIProfile
+	var selection string
+	profileOptions := []string{"[+] New Profile"}
+	for _, p := range cfg.AIProfiles {
+		profileOptions = append(profileOptions, p.Name)
 	}
-	err := survey.AskOne(&survey.Input{
-		Message: "Enter profile name to configure:",
-		Default: defaultProfile,
-	}, &profileName)
+
+	defaultSelection := "[+] New Profile"
+	if cfg.ActiveAIProfile != "" {
+		defaultSelection = cfg.ActiveAIProfile
+	}
+
+	err := survey.AskOne(&survey.Select{
+		Message: "Select AI Profile to configure:",
+		Options: profileOptions,
+		Default: defaultSelection,
+	}, &selection)
+	if err != nil {
+		ui.PrintInfo("Setup cancelled.")
+		return
+	}
+
+	if selection == "[+] New Profile" {
+		err = survey.AskOne(&survey.Input{
+			Message: "Enter name for new profile:",
+		}, &profileName)
+		if err != nil || profileName == "" {
+			ui.PrintInfo("Setup cancelled.")
+			return
+		}
+	} else {
+		profileName = selection
+	}
 	if err != nil {
 		ui.PrintInfo("Setup cancelled.")
 		return

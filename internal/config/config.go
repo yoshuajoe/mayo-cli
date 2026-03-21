@@ -84,6 +84,7 @@ type Config struct {
 	AnalystEnabled  bool        `json:"analyst_enabled"`
 	ServePort       int         `json:"serve_port,omitempty"`
 	ServeToken      string      `json:"serve_token,omitempty"`
+	KnownDomains    []string    `json:"known_domains,omitempty"`
 }
 
 func GetConfigDir() string {
